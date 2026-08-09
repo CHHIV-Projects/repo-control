@@ -225,6 +225,11 @@ def run_scan(repository_path: str, state_root: Path | None = None) -> dict[str, 
         write_json_deterministic(temp_dir / "dependencies.json", dependencies_payload)
         (temp_dir / "summary.md").write_text(summary_text, encoding="utf-8", newline="\n")
 
+        # Keep previously generated context packs stable across scans.
+        existing_contexts = final_dir / "contexts"
+        if existing_contexts.exists() and existing_contexts.is_dir():
+            shutil.copytree(existing_contexts, temp_dir / "contexts")
+
         backup_dir = None
         if final_dir.exists():
             backup_dir = root / f"{repository_id}.bak"
@@ -250,4 +255,14 @@ def run_scan(repository_path: str, state_root: Path | None = None) -> dict[str, 
         "branch": branch,
         "output_dir": str(final_dir),
         "parse_error_count": parse_error_count,
+        "repository_payload": repository_payload,
+        "files_payload": files_payload,
+        "symbols_payload": symbols_payload,
+        "tests_payload": tests_payload,
+        "dependencies_payload": dependencies_payload,
+        "summary_text": summary_text,
     }
+
+
+def run_scan_with_artifacts(repository_path: str, state_root: Path | None = None) -> dict[str, Any]:
+    return run_scan(repository_path=repository_path, state_root=state_root)
