@@ -977,3 +977,300 @@ Milestone 003 passes only if:
 - Vocab App validation matches direct source evidence;
 - the context pack materially narrows the initial source-inspection area for the Vocab App example;
 - no AI, semantic search, Git writes, Docker, or Photo Organizer access is introduced.
+
+
+
+
+
+# Product Owner / Architect Clarification Addendum — Milestone 003 Selection Contract
+
+This addendum resolves the remaining pre-coding determinism questions.
+
+It does not broaden Milestone 003 scope.
+
+## 1. Exact Tokenization Contract
+
+Milestone 003 must NOT perform camelCase or PascalCase splitting.
+
+Examples:
+
+    HTTPServer
+        -> httpserver
+
+    getHTTPServer
+        -> gethttpserver
+
+Do not infer:
+
+    http
+    server
+
+or:
+
+    get
+    http
+    server
+
+unless those components are separately present through one of the explicitly supported separators.
+
+### Token separators
+
+The following ASCII characters are explicit token boundaries:
+
+    _
+    -
+    .
+    /
+    \
+
+Whitespace is also a token boundary.
+
+Use Python string whitespace semantics consistently for canonical whitespace handling and tokenization.
+
+Do not perform Unicode normalization.
+
+Do not strip accents or transliterate characters.
+
+Do not treat arbitrary Unicode punctuation as a separator.
+
+Examples:
+
+    get_synonyms_nltk
+        -> get
+           synonyms
+           nltk
+
+    naïve-path
+        -> naïve
+           path
+
+    HTTPServer
+        -> httpserver
+
+    source—readiness
+
+where the middle character is a Unicode em dash, remains one token after casefolding because the em dash is not an authorized v1 separator.
+
+Matching uses `casefold()` but no additional normalization.
+
+The same tokenizer must be used for query tokens and token/component matching against supported repository fields.
+
+Document and test these exact rules.
+
+## 2. Diagnostic / Limitation Filtering
+
+Milestone 003 must use a strict deterministic allowlist.
+
+There is no discretionary "materially limits interpretation" judgment in implementation.
+
+Only diagnostics having one of these reasons are eligible for context inclusion:
+
+    ambiguous_module
+    target_parse_failure
+    shadowed_or_rebound
+    unresolved_symbol
+    wildcard_import
+
+A diagnostic is included only when BOTH conditions are true:
+
+1. its `reason` is in the allowlist above; and
+2. its relationship evidence intersects the selected context.
+
+For condition 2, intersection means at least one of:
+
+- `source_file` is a selected file;
+- a candidate tracked path is a selected file;
+- `source_symbol` identifies a selected symbol.
+
+Do not include diagnostics solely because they exist in `dependencies.json`.
+
+In particular:
+
+    no_tracked_module_match
+
+must never be included in a Milestone 003 context pack.
+
+Do not add implementation-specific discretionary inclusion rules.
+
+Preserve the complete diagnostic evidence in `dependencies.json`; context is only a bounded projection.
+
+## 3. Seed Identity and Deduplication
+
+Seed records remain typed and distinct.
+
+A file seed and a symbol seed are NOT collapsed merely because the symbol resides in that file.
+
+### File seed identity
+
+A file seed is uniquely identified by:
+
+    ("file", relative_path)
+
+Only one file seed with that identity may exist.
+
+### Symbol seed identity
+
+A symbol seed is uniquely identified by:
+
+    (
+        "symbol",
+        relative_path,
+        symbol_kind,
+        symbol_name,
+        start_line
+    )
+
+Only one symbol seed with that identity may exist.
+
+Therefore a file may legitimately contribute:
+
+- one file seed; and
+- one or more distinct symbol seeds.
+
+All such seed records compete independently under the existing deterministic ranking and:
+
+    MAX_SEEDS = 12
+
+The 12-seed limit applies to seed records, not unique files.
+
+After seed selection, downstream `selected_files` MUST deduplicate by relative path.
+
+A file therefore appears at most once in the selected-file collection even if several seed records point to it.
+
+Selected symbols likewise deduplicate by their canonical symbol identity.
+
+Do not introduce diversity quotas or per-file seed caps in Milestone 003.
+
+## 4. Fixed `match_status` Vocabulary
+
+For `context.json` schema version 1, `match_status` has exactly two allowed values:
+
+    matched
+    no_matches
+
+Use:
+
+    matched
+
+when at least one seed record survives seed selection.
+
+Use:
+
+    no_matches
+
+when zero seed candidates qualify.
+
+Do not introduce alternate strings such as:
+
+    success
+    partial
+    empty
+    found
+    truncated
+
+Truncation is represented separately in selection metadata and does not change `match_status`.
+
+## 5. Relationship Selection and Cross-Type Ordering
+
+The existing relationship priority buckets remain controlling:
+
+    Priority 1:
+    relationship directly involving a seed symbol
+
+    Priority 2:
+    relationship directly involving a seed file
+
+    Priority 3:
+    resolved test reference to a seed symbol/file
+
+    Priority 4:
+    other eligible one-hop relationship involving selected context
+
+Every qualifying relationship must be assigned exactly one priority bucket: the strongest applicable bucket.
+
+Within the same priority bucket, apply this fixed relationship-type order:
+
+    1. imported_symbol
+    2. call
+    3. module_dependency
+    4. test_reference
+
+Use these type labels consistently in context selection even if the underlying Milestone 002 artifact uses more detailed resolution-kind fields.
+
+Within equal priority bucket and relationship type, sort deterministically by:
+
+1. source file using established filesystem-byte path ordering;
+2. source line, with missing line sorted after known lines;
+3. source symbol name, using case-sensitive encoded ordering without locale rules;
+4. target file using established filesystem-byte path ordering;
+5. target symbol name, using case-sensitive encoded ordering;
+6. underlying deterministic relationship/resolution kind as final tie-breaker.
+
+Then apply:
+
+    MAX_RELATIONSHIPS = 40
+
+Record:
+
+- total qualifying relationships;
+- selected relationship count;
+- whether truncation occurred.
+
+Do not rely on source artifact iteration order when selecting at the relationship limit.
+
+## 6. Single Selection Policy
+
+Implement one canonical Milestone 003 selection-policy layer containing:
+
+- tokenization rules;
+- match scoring constants;
+- seed identity rules;
+- seed ranking;
+- fixed limits;
+- relationship priority/type ordering;
+- diagnostic allowlist/filtering;
+- deterministic sort keys.
+
+Do not duplicate these policies independently between JSON generation, Markdown rendering, CLI behavior, or tests.
+
+`context.md` must render the already-selected structured result rather than re-performing selection.
+
+## 7. Required Clarification Tests
+
+In addition to the original Milestone 003 requirements, explicitly test:
+
+- camelCase is not split;
+- PascalCase is not split;
+- the five authorized ASCII separators split tokens;
+- Unicode punctuation not explicitly authorized does not split tokens;
+- non-ASCII characters are preserved except for normal `casefold()` behavior;
+- file and symbol seeds for the same file remain distinct seed records;
+- duplicate file seeds collapse by file identity;
+- duplicate symbol seeds collapse by canonical symbol identity;
+- selected files deduplicate by path after seed selection;
+- `match_status` accepts only `matched` and `no_matches`;
+- `no_tracked_module_match` diagnostics are never projected into context;
+- allowlisted diagnostics are included only when they intersect selected context;
+- mixed relationship types obey the fixed priority/type sort contract before the 40-record cap.
+
+These are refinements of existing Milestone 003 requirements, not new feature scope.
+
+## 8. Scope Lock
+
+These clarifications do not authorize:
+
+- camelCase semantic parsing;
+- Unicode normalization/transliteration;
+- fuzzy matching;
+- semantic search;
+- dynamic ranking;
+- seed diversity heuristics;
+- AI judgment of diagnostic relevance;
+- recursive relationship traversal;
+- new generated artifacts;
+- source-code execution;
+- Git writes;
+- Docker;
+- Photo Organizer access.
+
+Proceed with the smallest implementation satisfying the original Milestone 003 prompt plus this addendum.
