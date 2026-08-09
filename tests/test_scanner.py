@@ -65,7 +65,14 @@ class ScannerTests(unittest.TestCase):
             output_dir = Path(result["output_dir"])
             self.assertTrue(output_dir.exists())
 
-            expected = ["repository.json", "files.json", "symbols.json", "tests.json", "summary.md"]
+            expected = [
+                "repository.json",
+                "files.json",
+                "symbols.json",
+                "tests.json",
+                "dependencies.json",
+                "summary.md",
+            ]
             for name in expected:
                 self.assertTrue((output_dir / name).exists())
 
@@ -133,6 +140,7 @@ class ScannerTests(unittest.TestCase):
             repo = _init_repo(root)
             result = run_scan(str(repo), state_root=root / "state")
             tests_payload = json.loads((Path(result["output_dir"]) / "tests.json").read_text(encoding="utf-8"))
+            self.assertEqual(tests_payload["schema_version"], 2)
             self.assertEqual(tests_payload["test_like_file_count"], 1)
             self.assertEqual(tests_payload["test_class_count"], 1)
             self.assertEqual(tests_payload["test_method_count"], 1)
@@ -176,14 +184,14 @@ class ScannerTests(unittest.TestCase):
             out = Path(first["output_dir"])
             first_bytes = {
                 name: (out / name).read_bytes()
-                for name in ["repository.json", "files.json", "symbols.json", "tests.json", "summary.md"]
+                for name in ["repository.json", "files.json", "symbols.json", "tests.json", "dependencies.json", "summary.md"]
             }
 
             second = run_scan(str(repo), state_root=state)
             out2 = Path(second["output_dir"])
             second_bytes = {
                 name: (out2 / name).read_bytes()
-                for name in ["repository.json", "files.json", "symbols.json", "tests.json", "summary.md"]
+                for name in ["repository.json", "files.json", "symbols.json", "tests.json", "dependencies.json", "summary.md"]
             }
 
             self.assertEqual(first_bytes, second_bytes)

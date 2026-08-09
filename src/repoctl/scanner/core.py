@@ -8,6 +8,7 @@ from typing import Any
 
 from .git_ops import ScanError, get_branch, get_head_commit, get_working_tree, list_tracked_files, validate_git_worktree
 from .python_scan import discover_test_structure, is_test_like_python_path, parse_python_file
+from .relationships import build_relationships
 from .summary import build_summary
 from .util import classify_file_type, count_lines_if_text, encode_path_order, make_repository_id, write_json_deterministic
 
@@ -195,13 +196,20 @@ def run_scan(repository_path: str, state_root: Path | None = None) -> dict[str, 
     )
     files_payload = _build_files_payload(repo_root, tracked_files)
     symbols_payload = _build_symbols_payload(repo_root, tracked_files)
-    tests_payload = _build_tests_payload(repo_root, tracked_files)
+    tests_payload_v1 = _build_tests_payload(repo_root, tracked_files)
+    dependencies_payload, tests_payload = build_relationships(
+        repo_root=repo_root,
+        tracked_files=tracked_files,
+        symbols_payload=symbols_payload,
+        tests_payload_v1=tests_payload_v1,
+    )
 
     summary_text = build_summary(
         repository=repository_payload,
         files_payload=files_payload,
         symbols_payload=symbols_payload,
         tests_payload=tests_payload,
+        dependencies_payload=dependencies_payload,
     )
 
     root = (state_root or DEFAULT_STATE_ROOT).expanduser()
@@ -214,6 +222,7 @@ def run_scan(repository_path: str, state_root: Path | None = None) -> dict[str, 
         write_json_deterministic(temp_dir / "files.json", files_payload)
         write_json_deterministic(temp_dir / "symbols.json", symbols_payload)
         write_json_deterministic(temp_dir / "tests.json", tests_payload)
+        write_json_deterministic(temp_dir / "dependencies.json", dependencies_payload)
         (temp_dir / "summary.md").write_text(summary_text, encoding="utf-8", newline="\n")
 
         backup_dir = None

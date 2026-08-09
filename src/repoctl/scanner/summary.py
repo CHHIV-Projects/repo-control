@@ -8,6 +8,7 @@ def build_summary(
     files_payload: dict[str, Any],
     symbols_payload: dict[str, Any],
     tests_payload: dict[str, Any],
+    dependencies_payload: dict[str, Any],
 ) -> str:
     lines: list[str] = []
 
@@ -54,6 +55,56 @@ def build_summary(
     lines.append(f"- test_class_count: {tests_payload['test_class_count']}")
     lines.append(f"- test_method_count: {tests_payload['test_method_count']}")
     lines.append(f"- top_level_test_function_count: {tests_payload['top_level_test_function_count']}")
+    lines.append(f"- test_reference_count: {tests_payload.get('test_reference_count', 0)}")
+    lines.append("")
+
+    counts = dependencies_payload["counts"]
+    lines.append("## Relationships")
+    lines.append(f"- internal_module_dependency_count: {counts['module_dependency_count']}")
+    lines.append(f"- resolved_imported_symbol_relationship_count: {counts['imported_symbol_relationship_count']}")
+    lines.append(f"- resolved_static_internal_call_count: {counts['call_relationship_count']}")
+    lines.append(f"- unresolved_relationship_count: {counts['unresolved_relationship_count']}")
+    lines.append(f"- ambiguous_relationship_count: {counts['ambiguous_relationship_count']}")
+    lines.append(f"- parse_failure_limited_relationship_count: {counts['target_parse_failure_count']}")
+    lines.append("")
+
+    lines.append("## Per-File Module Dependencies")
+    module_edges = dependencies_payload["module_dependencies"]
+    if not module_edges:
+        lines.append("- none")
+    else:
+        for edge in module_edges:
+            lines.append(
+                f"- {edge['source_file']} -> {edge['target_file']} | kind={edge['import_kind']} | import={edge['imported_module_text']} | line={edge['source_line']}"
+            )
+    lines.append("")
+
+    lines.append("## Per-Test Resolved References")
+    found_test_refs = False
+    for test_file in tests_payload.get("test_files", []):
+        for cls in test_file.get("classes", []):
+            for method in cls.get("test_methods", []):
+                refs = method.get("resolved_references", [])
+                if not refs:
+                    continue
+                found_test_refs = True
+                lines.append(f"- {test_file['path']}::{cls['name']}.{method['name']}")
+                for ref in refs:
+                    lines.append(
+                        f"  - {ref['target_file']}:{ref['target_symbol']} ({ref['target_symbol_kind']}) kind={ref['reference_kind']} line={ref['source_line']}"
+                    )
+        for fn in test_file.get("top_level_test_functions", []):
+            refs = fn.get("resolved_references", [])
+            if not refs:
+                continue
+            found_test_refs = True
+            lines.append(f"- {test_file['path']}::{fn['name']}")
+            for ref in refs:
+                lines.append(
+                    f"  - {ref['target_file']}:{ref['target_symbol']} ({ref['target_symbol_kind']}) kind={ref['reference_kind']} line={ref['source_line']}"
+                )
+    if not found_test_refs:
+        lines.append("- none")
     lines.append("")
 
     lines.append("## Requirements")

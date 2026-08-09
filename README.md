@@ -4,6 +4,8 @@ Repo Control Plane provides a deterministic, read-only repository scanner:
 
 repoctl scan <repository>
 
+Milestone 002 extends scan results with deterministic static relationship analysis for internal Python module dependencies, imported symbols, conservative call relationships, and test-to-symbol static references.
+
 ## Development install
 
 ```bash
@@ -28,6 +30,7 @@ Outputs are written into a deterministic repository-specific directory and inclu
 - files.json
 - symbols.json
 - tests.json
+- dependencies.json
 - summary.md
 
 ## Read-only target guarantee
