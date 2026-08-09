@@ -484,3 +484,356 @@ Milestone 001 passes only if:
 - Vocab App remains unmodified;
 - no Photo Organizer access occurs;
 - Git writes and all later-phase features remain absent.
+
+
+
+# Product Owner / Architect Clarification Addendum — Milestone 001 Schema Decisions
+
+This addendum resolves implementation ambiguities identified during pre-coding review.
+
+It does not broaden Milestone 001 scope.
+
+## 1. Requirements Extraction Location
+
+Milestone 001 must NOT create a separate dependency or requirements artifact.
+
+The required output surface remains exactly:
+
+    repository.json
+    files.json
+    symbols.json
+    tests.json
+    summary.md
+
+For Milestone 001, requirements declarations belong in `repository.json` under a repository-level `requirements` collection.
+
+Required conceptual shape:
+
+    "requirements": [
+        {
+            "path": "requirements.txt",
+            "declarations": [
+                "streamlit",
+                "gspread"
+            ]
+        }
+    ]
+
+For Milestone 001, recognize tracked files whose basename is exactly:
+
+    requirements.txt
+
+Nested `requirements.txt` files are allowed and must be distinguished by relative path.
+
+Declarations must:
+
+- preserve source-file order;
+- exclude blank lines;
+- exclude full-line comments after leading whitespace;
+- otherwise preserve the declaration text after surrounding whitespace is stripped.
+
+Do not resolve, normalize, install, version-check, or infer actual runtime use of requirements.
+
+Expanded dependency artifacts/models are deferred to later milestones.
+
+## 2. Repository Identifier Algorithm
+
+Milestone 001 must use one normative repository identifier algorithm.
+
+First derive the canonical repository root using the resolved real filesystem path of the validated Git work tree.
+
+Conceptually:
+
+    canonical_root = Path(repository_root).resolve(strict=True)
+
+The repository identifier is a readable basename slug plus a SHA-256 prefix derived from the canonical resolved path.
+
+Required form:
+
+    <slug>--<12-hex-digest>
+
+Where:
+
+- `<slug>` is derived from the canonical root basename;
+- convert the slug to lowercase;
+- preserve ASCII letters, digits, `.`, `_`, and `-`;
+- replace each run of other characters with `-`;
+- strip leading/trailing `-`, `.`, and `_`;
+- use `repo` if the result would otherwise be empty;
+- the digest is the first 12 lowercase hexadecimal characters of SHA-256 over the filesystem-encoded canonical root path.
+
+On the intended Linux runtime, use the filesystem byte representation (`os.fsencode`) of the canonical resolved root for hashing.
+
+Example shape only:
+
+    vocab-app--1a2b3c4d5e6f
+
+The example digest is not normative.
+
+For v0.1 this identifier represents the repository at its canonical local filesystem location.
+
+If the repository is moved to a different canonical location, a different repository identifier is acceptable and expected. Repo Control Plane state is regeneratable.
+
+Do not attempt to derive repository identity from GitHub remote URLs, repository contents, branch names, or commit history in Milestone 001.
+
+## 3. Deterministic Ordering Contract
+
+Do not rely on locale-aware, case-insensitive, or platform-default sorting.
+
+For path-bearing collections, order paths by their Linux filesystem byte representation using:
+
+    os.fsencode(relative_path)
+
+Do not Unicode-normalize or case-fold repository paths for ordering.
+
+Required ordering:
+
+- tracked-file records: path byte order;
+- Python-file records: path byte order;
+- test-file records: path byte order;
+- requirements-file records: path byte order;
+- working-tree status entries: primary path byte order, then original path byte order when applicable.
+
+Within a Python file:
+
+- functions/classes: ascending source start line, then name as a deterministic tie-breaker;
+- imports: preserve source order;
+- test classes/functions/methods: ascending source start line, then name as a deterministic tie-breaker.
+
+Requirements declarations preserve their original source-file order.
+
+JSON object keys must be serialized deterministically.
+
+No locale-dependent ordering is permitted.
+
+## 4. Working-Tree Status Contract
+
+Use:
+
+    git status --porcelain=v2 -z --untracked-files=all
+
+as the authoritative Milestone 001 working-tree status source.
+
+Do not use human-formatted `git status` output for parsing.
+
+`repository.json` must expose a structured working-tree object conceptually equivalent to:
+
+    "working_tree": {
+        "is_clean": true,
+        "entries": []
+    }
+
+Each non-clean entry must preserve sufficient Git porcelain-v2 evidence to distinguish the state without inventing a new repository-status authority.
+
+At minimum each entry must include:
+
+- `kind`
+- `path`
+- `original_path` when applicable, otherwise null
+- exact Git `xy` state when supplied by porcelain v2
+- submodule state when supplied by porcelain v2
+
+Recognized `kind` values for Milestone 001:
+
+    ordinary
+    rename_or_copy
+    unmerged
+    untracked
+
+For rename/copy records, also preserve:
+
+- rename versus copy operation;
+- similarity score when Git supplies one.
+
+The exact Git `xy` value is the authoritative index/worktree-state representation.
+
+Do not attempt in Milestone 001 to replace Git's complete status semantics with a larger custom state taxonomy.
+
+Ignored files need not be reported because Milestone 001 does not request `--ignored`.
+
+Unknown or unsupported porcelain-v2 record forms must fail clearly or be safely recorded as unsupported evidence; they must not be silently misclassified.
+
+## 5. Detached HEAD Representation
+
+Use a structured branch field.
+
+Attached branch:
+
+    "branch": {
+        "state": "attached",
+        "name": "main"
+    }
+
+Detached HEAD:
+
+    "branch": {
+        "state": "detached",
+        "name": null
+    }
+
+`HEAD` commit remains independently recorded in `repository.json`.
+
+Do not use sentinel branch names such as:
+
+    HEAD
+    DETACHED
+    (detached)
+
+as substitutes for the structured representation.
+
+## 6. Schema Version
+
+Every generated JSON artifact must contain:
+
+    "schema_version": 1
+
+Milestone 001 does not require a more elaborate schema registry or migration framework.
+
+Future milestones may evolve the schemas explicitly.
+
+## 7. Determinism Test Contract
+
+Strengthen Milestone 001 determinism validation as follows:
+
+Given:
+
+- the same repository;
+- the same canonical repository location;
+- the same HEAD;
+- the same working-tree state;
+- unchanged tracked file bytes;
+
+two consecutive scans must produce byte-for-byte identical:
+
+    repository.json
+    files.json
+    symbols.json
+    tests.json
+    summary.md
+
+Therefore authoritative scan artifacts must not contain:
+
+- scan timestamps;
+- random identifiers;
+- process IDs;
+- temporary paths;
+- nondeterministic collection ordering;
+- locale-dependent formatting.
+
+Use deterministic JSON serialization and a consistent terminal newline.
+
+The external state location itself need not appear in authoritative artifact content unless already required by the schema.
+
+## 8. Filename Clarification
+
+There is only one authoritative Milestone 001 prompt:
+
+    docs/001_deterministic_repository_scanner_prompt.md
+
+Any reference to a plus-sign filename variant or other similarly named draft was a typo or incidental reference.
+
+There is no second Milestone 001 prompt to review.
+
+## 9. Scope Lock
+
+These clarifications do not authorize:
+
+- additional output artifacts;
+- dependency graph implementation;
+- call graph implementation;
+- Git writes;
+- target-repository mutation;
+- AI integration;
+- Photo Organizer access;
+- broader repository-framework development.
+
+Proceed with the smallest implementation satisfying the original Milestone 001 prompt plus these locked schema decisions.
+
+
+
+
+# Product Owner / Architect Clarification Addendum 2 — Residual Determinism Decisions
+
+This addendum resolves the remaining pre-coding questions.
+
+It does not broaden Milestone 001 scope.
+
+## 1. Unsupported Git Porcelain-v2 Records
+
+Milestone 001 must fail closed when it encounters a porcelain-v2 record form that it does not support or cannot parse unambiguously.
+
+Normal behavior is:
+
+1. detect the unsupported record;
+2. stop the scan;
+3. report a clear diagnostic identifying the unsupported record type without inventing an interpretation;
+4. return a non-zero exit status;
+5. do not publish a new authoritative scan artifact set as though the scan succeeded.
+
+Do not silently omit, reinterpret, or downgrade unsupported Git status evidence.
+
+If a previously successful artifact set already exists, failure of a new scan must not overwrite it with partial or ambiguous results.
+
+A future milestone may introduce an explicitly named diagnostic/permissive mode if useful. Milestone 001 has no permissive mode.
+
+## 2. Empty Requirements Files
+
+Every tracked file whose basename is exactly:
+
+    requirements.txt
+
+must appear in the repository-level `requirements` collection, even if it contains zero qualifying declarations.
+
+Example:
+
+    {
+        "path": "requirements.txt",
+        "declarations": []
+    }
+
+This distinguishes:
+
+- no recognized requirements file exists;
+
+from:
+
+- a recognized requirements file exists but contains no nonblank, non-comment declarations.
+
+Requirements-file entries remain ordered by the deterministic path-ordering contract.
+
+## 3. `summary.md` Determinism
+
+The human-readable `summary.md` is part of the Milestone 001 deterministic output contract.
+
+Its:
+
+- section ordering;
+- subsection ordering;
+- collection ordering;
+- heading text;
+- rendering rules;
+- newline convention
+
+must be fixed by the implementation and covered by determinism tests.
+
+Given identical authoritative repository state, two consecutive scans must produce byte-for-byte identical `summary.md`, just as required for the JSON artifacts.
+
+The summary must be rendered solely from the structured scan results.
+
+Do not allow dictionary iteration order, locale, timestamps, environment-specific formatting, or other incidental runtime state to alter its output.
+
+The exact initial Markdown layout may be chosen during implementation, but once selected it must be explicit, tested, and deterministic within schema version 1.
+
+## 4. Scope Lock
+
+These decisions do not authorize:
+
+- a permissive Git-status mode;
+- additional artifacts;
+- requirements dependency resolution;
+- dynamic summary templates;
+- AI interpretation;
+- target-repository mutation;
+- Photo Organizer access.
+
+Proceed with Milestone 001 after incorporating these decisions.
