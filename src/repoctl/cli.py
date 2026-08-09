@@ -4,9 +4,11 @@ import argparse
 from pathlib import Path
 import sys
 
+from .compare.manager import compare_snapshots
 from .context.generator import build_and_publish_context
 from .scanner.core import run_scan, run_scan_with_artifacts
 from .scanner.git_ops import ScanError
+from .snapshot.manager import create_snapshot
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -19,6 +21,14 @@ def build_parser() -> argparse.ArgumentParser:
     context_parser = subparsers.add_parser("context", help="Generate deterministic context pack")
     context_parser.add_argument("query", help="Navigation query text")
     context_parser.add_argument("--repository", help="Path inside target Git repository")
+
+    snapshot_parser = subparsers.add_parser("snapshot", help="Capture immutable deterministic snapshot")
+    snapshot_parser.add_argument("--repository", help="Path inside target Git repository")
+
+    compare_parser = subparsers.add_parser("compare", help="Compare two immutable snapshots")
+    compare_parser.add_argument("before_snapshot_id", help="Before snapshot identifier")
+    compare_parser.add_argument("after_snapshot_id", help="After snapshot identifier")
+    compare_parser.add_argument("--repository", help="Path inside target Git repository")
 
     return parser
 
@@ -73,6 +83,45 @@ def main(argv: list[str] | None = None) -> int:
         print(f"selected_symbol_count: {context_result['selected_symbol_count']}")
         print(f"selected_relationship_count: {context_result['selected_relationship_count']}")
         print(f"selected_test_reference_count: {context_result['selected_test_reference_count']}")
+        return 0
+
+    if args.command == "snapshot":
+        repository_path = args.repository if args.repository else str(Path.cwd())
+        try:
+            scan_result = run_scan_with_artifacts(repository_path)
+            snapshot_result = create_snapshot(scan_result=scan_result)
+        except ScanError as exc:
+            print(f"snapshot failed: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:
+            print(f"snapshot failed: {exc}", file=sys.stderr)
+            return 1
+
+        print("snapshot complete")
+        print(f"target: {snapshot_result['repository_root']}")
+        print(f"repository_id: {snapshot_result['repository_id']}")
+        print(f"snapshot_id: {snapshot_result['snapshot_id']}")
+        print(f"output: {snapshot_result['snapshot_dir']}")
+        print(f"reused_existing: {snapshot_result['reused_existing']}")
+        return 0
+
+    if args.command == "compare":
+        repository_path = args.repository if args.repository else str(Path.cwd())
+        try:
+            compare_result = compare_snapshots(args.before_snapshot_id, args.after_snapshot_id, repository_path)
+        except ScanError as exc:
+            print(f"compare failed: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:
+            print(f"compare failed: {exc}", file=sys.stderr)
+            return 1
+
+        print("compare complete")
+        print(f"target: {compare_result['repository_root']}")
+        print(f"repository_id: {compare_result['repository_id']}")
+        print(f"comparison_id: {compare_result['comparison_id']}")
+        print(f"output: {compare_result['comparison_dir']}")
+        print(f"reused_existing: {compare_result['reused_existing']}")
         return 0
 
     parser.print_help()

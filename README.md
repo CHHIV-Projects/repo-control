@@ -10,6 +10,11 @@ Milestone 003 adds deterministic context-pack generation:
 
 repoctl context "<query>" [--repository <path>]
 
+Milestone 004 adds immutable snapshots and deterministic structural comparison:
+
+repoctl snapshot [--repository <path>]
+repoctl compare <before_snapshot_id> <after_snapshot_id> [--repository <path>]
+
 ## Development install
 
 ```bash
@@ -25,6 +30,8 @@ repoctl scan /path/to/git/repo
 ```bash
 repoctl context "synonym handling"
 repoctl context "get_sheet" --repository /path/to/git/repo
+repoctl snapshot --repository /path/to/git/repo
+repoctl compare snap--before snap--after --repository /path/to/git/repo
 ```
 
 ## External state location
@@ -51,6 +58,18 @@ with:
 - context.json
 - context.md
 
+Snapshots are written under:
+
+~/.local/share/repoctl/<repository_id>/snapshots/<snapshot_id>/
+
+Comparisons are written under:
+
+~/.local/share/repoctl/<repository_id>/comparisons/<comparison_id>/
+
+Snapshots are content-derived and immutable. Running `repoctl snapshot` twice against identical deterministic scan evidence reuses the same snapshot ID.
+Comparisons are directional and operate on named snapshots, not the repository's current working state.
+Snapshot structural scope remains tracked files; if untracked worktree entries exist, completeness is explicitly reported as partial rather than implying full worktree structural analysis.
+
 Context packs are lexical and deterministic (no AI, embeddings, or semantic search), use a fixed seed-plus-one-hop selection strategy, and enforce fixed bounds for seeds, files, symbols, relationships, and test references.
 They are navigation evidence, not source-code authority.
 
@@ -59,10 +78,12 @@ They are navigation evidence, not source-code authority.
 Milestone 001 only performs read-only filesystem and Git inspection of the target repository.
 It does not write, stage, commit, switch branches, or otherwise mutate the target repository.
 
-## Milestone 001 limitations
+## Current limitations
 
 - No AI integration.
 - No call graph or test-to-symbol mapping.
 - No dependency resolution.
 - No Git write operations.
-- No repository delta/snapshot features.
+- No architectural or risk scoring.
+
+Repo Control Plane remains read-only toward target repositories in these milestones. It does not stage, commit, push, switch branches, or otherwise perform Git writes against the target.

@@ -225,10 +225,11 @@ def run_scan(repository_path: str, state_root: Path | None = None) -> dict[str, 
         write_json_deterministic(temp_dir / "dependencies.json", dependencies_payload)
         (temp_dir / "summary.md").write_text(summary_text, encoding="utf-8", newline="\n")
 
-        # Keep previously generated context packs stable across scans.
-        existing_contexts = final_dir / "contexts"
-        if existing_contexts.exists() and existing_contexts.is_dir():
-            shutil.copytree(existing_contexts, temp_dir / "contexts")
+        # Keep previously generated higher-level state stable across scans.
+        for namespace in ("contexts", "snapshots", "comparisons"):
+            existing_dir = final_dir / namespace
+            if existing_dir.exists() and existing_dir.is_dir():
+                shutil.copytree(existing_dir, temp_dir / namespace)
 
         backup_dir = None
         if final_dir.exists():
