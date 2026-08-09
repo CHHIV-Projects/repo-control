@@ -629,3 +629,242 @@ Milestone 002 passes only if:
 - Vocab App validation matches direct source evidence;
 - scanning does not mutate Vocab App;
 - no AI, Git writes, Docker, context generation, or Photo Organizer access is introduced.
+
+
+
+# Product Owner / Architect Clarification Addendum — Milestone 002 Relationship Contract
+
+This addendum resolves the final pre-coding ambiguities identified during Milestone 002 review.
+
+It does not broaden Milestone 002 scope.
+
+## 1. Initial Git Preflight
+
+At the initial start of Milestone 002 implementation, the Repo Control Plane worktree must be completely clean.
+
+Use read-only Git status inspection equivalent to:
+
+    git status --porcelain=v2 -z --untracked-files=all
+
+If any tracked or untracked worktree entry exists at initial implementation start:
+
+- stop;
+- report the exact status;
+- do not automatically restore, clean, stage, commit, or otherwise repair the repository.
+
+There is no concept of an implicit or operator-approved dirty baseline for the initial Milestone 002 start.
+
+If work is later resumed after Milestone 002 implementation has already intentionally begun, do not treat the milestone's own known work-in-progress files as an initial-preflight violation. Preserve and report that state rather than resetting it.
+
+This clarification applies only to process preflight and does not change target-repository read-only behavior.
+
+## 2. `tests.json` Schema Version
+
+Milestone 002 intentionally changes the structure and meaning of `tests.json` by adding deterministic resolved repository references to discovered tests.
+
+Therefore:
+
+    tests.json
+    schema_version = 2
+
+is mandatory for Milestone 002.
+
+Do not leave this conditional.
+
+Unrelated Milestone 001 JSON artifacts retain their existing schema versions unless their structures actually change.
+
+The new:
+
+    dependencies.json
+
+uses:
+
+    schema_version = 1
+
+Document the exact `tests.json` v1 -> v2 structural change in the closeout.
+
+## 3. Ambiguous Module Resolution
+
+Internal module resolution must never use a precedence rule or tie-break to choose among multiple valid tracked candidates.
+
+If the same import identity maps to more than one tracked candidate under the supported Milestone 002 resolution rules:
+
+    classification = ambiguous
+
+and:
+
+- record the ambiguity;
+- record all candidate tracked paths in deterministic path order;
+- create no resolved module edge;
+- create no imported-symbol edge dependent on that module;
+- create no call edge dependent on that module;
+- create no test-reference edge dependent on that module.
+
+Examples include mixed repository layouts where both root and `src/` mappings would produce the same logical module name.
+
+Do not prefer:
+
+- root over `src/`;
+- `src/` over root;
+- shortest path;
+- first lexical path;
+- first discovered path.
+
+Ambiguity must remain ambiguity.
+
+## 4. Mandatory Unresolved / Ambiguous Evidence
+
+`dependencies.json` must contain deterministic diagnostic evidence for supported relationship-resolution attempts that cannot be resolved.
+
+At minimum distinguish:
+
+    unresolved
+    ambiguous
+
+Do not silently omit a relationship attempt when its syntax matches a Milestone 002 supported resolution form but resolution fails.
+
+A minimal diagnostic record must include:
+
+- `relationship_kind`;
+- `source_file`;
+- `source_symbol`, or null when the relationship occurs at module scope;
+- `source_line`;
+- `reference`;
+- `reason`;
+- `candidates`.
+
+`candidates` must be:
+
+- an empty list when no tracked candidate can be established;
+- a deterministically ordered list of candidate tracked paths/symbols when ambiguity exists.
+
+Required `relationship_kind` values should remain narrowly defined, for example:
+
+    module_import
+    imported_symbol
+    call
+    test_reference
+
+Required reason vocabulary should remain small and explicit, for example:
+
+    no_tracked_module_match
+    ambiguous_module
+    unresolved_symbol
+    wildcard_import
+    shadowed_or_rebound
+    target_parse_failure
+
+If one additional reason is genuinely necessary, define it narrowly and document it in the closeout.
+
+Do not store arbitrary raw source-code lines merely for diagnostics.
+
+### Scope of unresolved import evidence
+
+For ordinary import syntax:
+
+- imports that resolve uniquely to tracked Python modules become internal dependency edges;
+- imports with multiple tracked candidates become ambiguous records;
+- imports with no tracked module match may be recorded as unresolved/external evidence but must not become internal dependency edges.
+
+For call/reference analysis, create unresolved diagnostic records only when the call/reference syntax otherwise matches a supported Milestone 002 resolution form.
+
+Do not attempt to diagnose every arbitrary Python expression.
+
+## 5. Shadowing and Rebinding
+
+Static call/reference resolution must fail conservatively when the apparent imported or module-level name is shadowed or rebound.
+
+If a candidate identifier is locally bound in the caller's relevant Python scope, do not resolve a use of that identifier to an imported or repository-level symbol merely because the same name exists there.
+
+Relevant local bindings include, where statically observable:
+
+- function parameters;
+- assignment targets;
+- annotated assignment targets;
+- augmented assignment targets;
+- loop targets;
+- `with ... as` targets;
+- exception `as` targets;
+- assignment expressions;
+- local imports;
+- nested function/class definitions that bind the name in that scope.
+
+Likewise, if a module-level imported binding is statically rebound in the module such that exact call identity cannot be proven, do not claim a resolved repository call from that binding.
+
+When shadowing/rebinding prevents an otherwise supported resolution:
+
+    reason = shadowed_or_rebound
+
+and no resolved call/reference edge is created.
+
+Do not implement full Python control-flow or runtime name-resolution analysis in Milestone 002.
+
+Conservative omission is preferred to a false edge.
+
+## 6. AST Parse-Failure Policy
+
+A Python AST parse failure must NOT fail the overall repository scan.
+
+Preserve Milestone 001 behavior:
+
+- record the parse failure;
+- skip AST-dependent relationship extraction originating from that file;
+- continue scanning other files.
+
+If another successfully parsed file imports a tracked Python file whose AST failed:
+
+- the tracked module path may still establish a module-level dependency when module resolution itself is unambiguous;
+- imported-symbol resolution into the failed target must not be claimed;
+- function-call resolution into the failed target must not be claimed;
+- record `target_parse_failure` where an otherwise supported relationship attempt depends on unavailable target symbol evidence.
+
+The relationship output and summary must expose the existence/count of relationship-analysis limitations caused by parse failures.
+
+Do not fabricate an empty symbol table for a file that failed parsing.
+
+Do not fail the global scan merely because one tracked Python file cannot be parsed.
+
+## 7. Canonical Resolver
+
+Use one canonical deterministic relationship resolver for:
+
+- module dependency resolution;
+- imported-symbol resolution;
+- production call resolution;
+- test-reference resolution.
+
+Do not implement separate competing resolution rules for production code and tests.
+
+The same ambiguity, parse-failure, shadowing, and unresolved rules must apply consistently wherever relevant.
+
+## 8. Required Negative Tests
+
+In addition to the original Milestone 002 test requirements, explicitly cover:
+
+- root-versus-`src/` ambiguous module identity produces no edge;
+- locally shadowed imported function produces no call edge;
+- locally shadowed imported module produces no attribute-call edge;
+- module-level rebinding prevents false imported-name resolution;
+- wildcard import produces no fabricated symbol edge;
+- target AST parse failure preserves module evidence where provable but prevents symbol/call resolution;
+- unresolved and ambiguous diagnostic records use the required deterministic minimal structure.
+
+These are refinements of already-required Milestone 002 behavior, not new feature scope.
+
+## 9. Scope Lock
+
+These clarifications do not authorize:
+
+- runtime import resolution;
+- Python execution;
+- full control-flow analysis;
+- a custom Python symbol-table engine beyond what is needed for conservative Milestone 002 resolution;
+- package installation;
+- new user-facing commands;
+- additional generated artifacts;
+- AI integration;
+- Docker;
+- Git writes;
+- Photo Organizer access.
+
+Proceed with the smallest deterministic implementation satisfying the original Milestone 002 prompt plus this addendum.
