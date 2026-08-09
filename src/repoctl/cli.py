@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 import sys
 
+from .analysis.manager import AnalysisError, analyze_comparison
 from .compare.manager import compare_snapshots
 from .context.generator import build_and_publish_context
 from .scanner.core import run_scan, run_scan_with_artifacts
@@ -29,6 +30,10 @@ def build_parser() -> argparse.ArgumentParser:
     compare_parser.add_argument("before_snapshot_id", help="Before snapshot identifier")
     compare_parser.add_argument("after_snapshot_id", help="After snapshot identifier")
     compare_parser.add_argument("--repository", help="Path inside target Git repository")
+
+    analyze_parser = subparsers.add_parser("analyze", help="Analyze one immutable comparison with local GPT-OSS")
+    analyze_parser.add_argument("comparison_id", help="Comparison identifier")
+    analyze_parser.add_argument("--repository", help="Path inside target Git repository")
 
     return parser
 
@@ -122,6 +127,31 @@ def main(argv: list[str] | None = None) -> int:
         print(f"comparison_id: {compare_result['comparison_id']}")
         print(f"output: {compare_result['comparison_dir']}")
         print(f"reused_existing: {compare_result['reused_existing']}")
+        return 0
+
+    if args.command == "analyze":
+        repository_path = args.repository if args.repository else str(Path.cwd())
+        try:
+            analysis_result = analyze_comparison(args.comparison_id, repository_path)
+        except (AnalysisError, ScanError) as exc:
+            print(f"analyze failed: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:
+            print(f"analyze failed: {exc}", file=sys.stderr)
+            return 1
+
+        print("analyze complete")
+        print(f"target: {analysis_result['repository_root']}")
+        print(f"repository_id: {analysis_result['repository_id']}")
+        print(f"comparison_id: {analysis_result['comparison_id']}")
+        print(f"packet_id: {analysis_result['packet_id']}")
+        print(f"request_id: {analysis_result['request_id']}")
+        print(f"analysis_id: {analysis_result['analysis_id']}")
+        print(f"provider: {analysis_result['provider']}")
+        print(f"model_name: {analysis_result['model_name']}")
+        print(f"model_digest: {analysis_result['model_digest']}")
+        print(f"output: {analysis_result['analysis_dir']}")
+        print(f"reused_existing: {analysis_result['reused_existing']}")
         return 0
 
     parser.print_help()

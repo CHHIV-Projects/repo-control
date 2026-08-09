@@ -226,7 +226,7 @@ def run_scan(repository_path: str, state_root: Path | None = None) -> dict[str, 
         (temp_dir / "summary.md").write_text(summary_text, encoding="utf-8", newline="\n")
 
         # Keep previously generated higher-level state stable across scans.
-        for namespace in ("contexts", "snapshots", "comparisons"):
+        for namespace in ("contexts", "snapshots", "comparisons", "analyses"):
             existing_dir = final_dir / namespace
             if existing_dir.exists() and existing_dir.is_dir():
                 shutil.copytree(existing_dir, temp_dir / namespace)
