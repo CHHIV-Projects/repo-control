@@ -1559,3 +1559,398 @@ Milestone 005 passes only if:
 - controlled live GPT-OSS analysis produces useful grounded review guidance;
 - target repositories remain unmodified;
 - no Photo Organizer access occurs.
+
+
+
+# Product Owner / Architect Clarification Addendum — Milestone 005 Provider, Packet, and Live-Validation Contract
+
+This addendum resolves the remaining pre-coding questions for Milestone 005.
+
+It does not broaden Milestone 005 scope.
+
+## 1. Authoritative Ollama Model Digest Source
+
+For Milestone 005, the sole authoritative source of the installed GPT-OSS model digest is:
+
+    GET http://127.0.0.1:11434/api/tags
+
+Do not obtain model identity from:
+
+- `ollama list` CLI output;
+- `/api/show`;
+- `/api/ps`;
+- filesystem inspection;
+- model modification timestamps;
+- another Ollama endpoint;
+- a fallback provider.
+
+From the `/api/tags` response, select exactly one model record having:
+
+    name == "gpt-oss:20b"
+
+The required model name comparison is exact and case-sensitive.
+
+The selected record must contain a valid:
+
+    digest
+
+The digest must be treated as the exact Ollama-provided model content identity.
+
+For Milestone 005 validation, require the digest to be a 64-character lowercase hexadecimal SHA-256 value.
+
+If:
+
+- no exact `gpt-oss:20b` record exists;
+- more than one exact record unexpectedly exists;
+- `digest` is absent;
+- `digest` is malformed;
+
+fail clearly before the analysis request.
+
+Do not substitute a model whose `model`, family, tag, or other metadata merely resembles the required name.
+
+Record in analysis provenance:
+
+    provider = "ollama"
+    model_name = "gpt-oss:20b"
+    model_digest = <exact /api/tags digest>
+
+This exact digest participates in `request_id`.
+
+## 2. Summary Text Shape
+
+The structured model field:
+
+    summary
+
+must be exactly one trimmed JSON string.
+
+Validation requirements:
+
+- non-empty after trimming;
+- maximum 1000 characters;
+- no embedded `\n`;
+- no embedded `\r`.
+
+Therefore the summary is a single paragraph/string value.
+
+The response normalizer may strip leading/trailing whitespace but must not rewrite model wording.
+
+The same no-embedded-newline rule should apply to:
+
+    review_signals[].observation
+    review_signals[].interpretation
+    questions_for_human_review[].question
+
+These fields remain bounded by their original maximum lengths.
+
+This keeps `analysis.md` rendering structurally predictable.
+
+## 3. Canonical Packet Construction Order
+
+Use one canonical packet-selection policy.
+
+Required construction flow:
+
+    complete deterministic comparison evidence
+        ↓
+    build deterministic candidate records by category
+        ↓
+    sort each category using its fixed mechanical ordering
+        ↓
+    apply each category's fixed MAX_AI_* record cap
+        ↓
+    concatenate surviving category records using fixed group order
+        ↓
+    enforce MAX_ANALYSIS_PACKET_BYTES by removing records
+    from the end of that canonical ordered detailed-record stream
+        ↓
+    assign/finalize deterministic evidence IDs
+        ↓
+    construct final packet metadata
+        ↓
+    calculate packet_id
+
+The fixed evidence group order remains:
+
+    1. aggregate
+    2. coverage
+    3. parse failures
+    4. diagnostics
+    5. file changes
+    6. requirements changes
+    7. symbol changes
+    8. relationship changes
+    9. test-reference changes
+
+Category limits therefore apply first.
+
+The total byte limit applies second.
+
+Do not independently byte-trim categories.
+
+Do not use proportional allocation, fairness weighting, round-robin selection, or AI relevance scoring.
+
+## 4. Protected Packet Evidence
+
+The following are protected from byte-limit record removal:
+
+    A001
+    required comparison identity/provenance metadata
+    required packet-selection metadata
+    required structural aggregate counts
+    required coverage/completeness evidence
+
+Detailed records are removed from the end of the canonical detailed-record stream until the complete serialized packet satisfies:
+
+    MAX_ANALYSIS_PACKET_BYTES = 32768
+
+Do not truncate individual evidence values or strings merely to fit the packet.
+
+If the mandatory protected packet alone somehow exceeds the byte limit:
+
+- fail packet construction clearly;
+- do not call GPT-OSS;
+- do not silently violate the byte contract.
+
+## 5. Evidence ID Finalization
+
+Evidence IDs must describe the final packet actually sent to GPT-OSS.
+
+After category selection and byte-limit trimming are complete, assign deterministic final evidence IDs from the surviving records.
+
+Use the existing category prefixes:
+
+    A
+    C
+    F
+    Q
+    S
+    R
+    T
+    P
+    D
+
+Number records within each prefix from the final surviving deterministic order:
+
+    F001
+    F002
+    ...
+
+Do not expose IDs for records omitted from the final packet.
+
+The same finalized evidence collection must drive:
+
+- packet serialization;
+- packet_id;
+- model prompt evidence;
+- response evidence-ID validation;
+- truncation metadata;
+- analysis rendering.
+
+Do not independently reconstruct evidence IDs in separate layers.
+
+## 6. Packet Truncation Metadata
+
+The packet must distinguish at least:
+
+- total candidate records by category before category cap;
+- records retained after category cap;
+- records removed by category cap;
+- records removed by total-byte enforcement;
+- final records sent by category;
+- whether category truncation occurred;
+- whether byte truncation occurred;
+- final serialized packet byte count.
+
+This metadata is deterministic.
+
+The model may be told that evidence was truncated, but GPT-OSS must not infer facts about omitted records.
+
+## 7. Non-Zero Delta With Little Detailed Evidence
+
+The existing non-zero-delta rule remains mandatory.
+
+If authoritative aggregate evidence shows structural delta:
+
+    review_signals
+
+must contain at least one valid signal even if byte-limit trimming removes most or all detailed change records.
+
+`A001` is valid deterministic evidence.
+
+Therefore a minimally grounded response may produce a cautious signal such as conceptually:
+
+    review_priority = "low"
+    category = "cross_category"
+    observation =
+        "The deterministic aggregate comparison reports structural changes."
+    interpretation =
+        "The detailed packet is heavily truncated, so direct comparison/source
+         inspection is appropriate before drawing conclusions."
+    evidence_ids = ["A001"]
+
+Coverage evidence may also be cited when applicable.
+
+The model must NOT infer the nature of omitted detailed changes from aggregate counts alone.
+
+Packet truncation is therefore itself a limitation on interpretation, not a reason to pretend the comparison is zero-delta.
+
+## 8. Zero-Delta Rule Remains Strict
+
+If authoritative aggregate comparison evidence shows zero structural delta:
+
+    review_signals = []
+    questions_for_human_review = []
+
+remains mandatory.
+
+Packet truncation does not change this rule.
+
+A model response violating it is invalid and must not be published.
+
+## 9. Live GPT-OSS Validation Attempts
+
+Production behavior remains:
+
+    PROVIDER_ATTEMPTS = 1
+
+One invocation of:
+
+    repoctl analyze ...
+
+makes at most one GPT-OSS generation request.
+
+There is no automatic retry or repair loop.
+
+For milestone validation only, the operator may perform up to:
+
+    MAX_LIVE_VALIDATION_INVOCATIONS_PER_SCENARIO = 3
+
+separate explicit command invocations for each required live scenario:
+
+1. controlled non-zero comparison;
+2. zero-delta comparison.
+
+Each invocation remains an independent one-request execution.
+
+Invalid responses must:
+
+- fail validation;
+- publish no partial analysis;
+- preserve comparison/snapshot evidence;
+- be reported as validation failures.
+
+This bounded manual re-invocation allowance exists only to distinguish occasional model-generation variability from persistent inability to satisfy the grounding contract.
+
+Do not implement these three attempts as automatic application retry behavior.
+
+## 10. Milestone Acceptance When the Live Model Misbehaves
+
+Fail-closed provider/model behavior is a successful implementation property.
+
+However, Milestone 005 acceptance requires successful live demonstration of the intended AI layer.
+
+Therefore:
+
+### Implementation can be considered technically correct when:
+
+- all deterministic/fake-provider tests pass;
+- malformed live GPT-OSS output is correctly rejected;
+- no invalid analysis is published;
+- all authority and safety boundaries remain intact.
+
+### Milestone 005 can be fully accepted only when:
+
+- at least one controlled non-zero live invocation produces valid,
+  evidence-grounded advisory output; and
+- at least one zero-delta live invocation satisfies the strict zero-delta rule.
+
+If no valid response is achieved for either required scenario within the bounded validation invocations:
+
+    STATUS: ESCALATION REQUIRED
+
+Report:
+
+- implementation test status;
+- exact live scenario that failed;
+- number of explicit invocations attempted;
+- provider/model identity and digest;
+- validation failure categories;
+- confirmation that invalid output was not published.
+
+Do not weaken:
+
+- response schema;
+- evidence-ID validation;
+- zero-delta grounding;
+- local-only provider boundary;
+- model identity requirements;
+
+merely to obtain a passing live result.
+
+A closeout may therefore distinguish:
+
+    IMPLEMENTATION COMPLETE
+
+from:
+
+    MILESTONE ACCEPTED
+
+They are not automatically equivalent when the external model cannot satisfy the live grounding contract.
+
+## 11. Single Canonical Analysis Policy
+
+Use shared constants/helpers for:
+
+- model-name validation;
+- model-digest validation;
+- evidence-category ordering;
+- category caps;
+- byte-limit enforcement;
+- evidence-ID assignment;
+- text-shape validation;
+- zero/non-zero delta grounding rules.
+
+Do not allow the packet builder, response validator, manager, and Markdown renderer to develop competing interpretations of these contracts.
+
+The coder's proposed focused `analysis` package remains appropriate.
+
+## 12. Required Clarification Tests
+
+In addition to the original Milestone 005 tests, explicitly verify:
+
+- `/api/tags` is the model-digest provenance source;
+- exact `name == "gpt-oss:20b"` is required;
+- malformed/missing digest fails before generation;
+- `/api/show`, `/api/ps`, and CLI output are not used as digest fallback;
+- summary/observation/interpretation/question strings reject embedded CR/LF;
+- category caps occur before total byte enforcement;
+- one canonical global evidence order controls byte trimming;
+- byte trimming removes complete records only from the end;
+- protected aggregate/coverage evidence survives byte trimming;
+- final evidence IDs describe only surviving packet records;
+- packet truncation metadata distinguishes category-cap removal from byte-limit removal;
+- a non-zero aggregate with no detailed surviving change records still requires one grounded signal;
+- zero-delta remains signal/question empty;
+- invalid live-like fake-provider responses publish no analysis.
+
+These refine existing Milestone 005 requirements and do not add new feature scope.
+
+## 13. Scope Lock
+
+These clarifications do not authorize:
+
+- cloud fallback;
+- alternate local models;
+- automated retry loops;
+- model repair conversations;
+- multiple generation calls per invocation;
+- source-code access by GPT-OSS;
+- relaxed evidence grounding;
+- Git writes;
+- agent/tool execution;
+- Docker changes;
+- Photo Organizer access.
+
+Proceed with the smallest implementation satisfying the original Milestone 005 prompt plus this addendum.
