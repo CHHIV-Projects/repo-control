@@ -1209,3 +1209,243 @@ Milestone 006 passes only if:
 - Vocab App validation matches direct Git evidence;
 - all automated tests pass;
 - no AI, Git writes, Docker changes, or Photo Organizer access is introduced.
+
+
+
+# Product Owner / Architect Clarification Addendum — Milestone 006 Git-State Contract
+
+This addendum resolves the remaining pre-coding implementation questions.
+
+It does not broaden Milestone 006 scope.
+
+## 1. Upstream Divergence Unavailable Reason
+
+When an upstream is configured but its corresponding locally available ref cannot support divergence calculation, report:
+
+    upstream.configured = true
+    upstream.divergence_state = "unavailable"
+    upstream.relation = null
+    upstream.ahead = null
+    upstream.behind = null
+
+Also include:
+
+    upstream.unavailable_reason = "upstream_ref_unavailable"
+
+For an available divergence result:
+
+    upstream.divergence_state = "available"
+    upstream.unavailable_reason = null
+
+For no configured upstream:
+
+    upstream.configured = false
+    upstream.ref = null
+    upstream.divergence_state = "unavailable"
+    upstream.unavailable_reason = "upstream_not_configured"
+    upstream.relation = null
+    upstream.ahead = null
+    upstream.behind = null
+
+Use exactly these two unavailable-reason values for schema version 1:
+
+    upstream_not_configured
+    upstream_ref_unavailable
+
+Do not create arbitrary human prose as machine-readable reason values.
+
+Human-readable Markdown may explain the corresponding condition.
+
+## 2. Active Git Operation Representation
+
+Keep Git-operation evidence intentionally minimal.
+
+`status.json` must contain:
+
+    git_operation_in_progress = true|false
+
+and:
+
+    git_operations = [...]
+
+using only the fixed ordered operation names:
+
+    merge
+    rebase
+    cherry_pick
+    revert
+    bisect
+
+Do not add per-operation Git metadata paths, marker-file names, internal repository paths, or operation payload details to `status.json`.
+
+The deterministic presence of an operation name is sufficient workflow evidence for Milestone 006.
+
+Detection implementation may inspect Git-resolved metadata internally, but those implementation details are not part of the output schema.
+
+## 3. Unsupported Porcelain-v2 Record Failure
+
+Unsupported porcelain-v2 record forms must fail closed.
+
+Use a stable failure classification:
+
+    unsupported_porcelain_v2_record
+
+The safe operator message may include only the unrecognized record type/prefix needed to identify the parser issue.
+
+Conceptually:
+
+    git status error [unsupported_porcelain_v2_record]:
+    unsupported porcelain-v2 record prefix: X
+
+Do not include the complete raw porcelain record merely for diagnostics.
+
+In particular, do not expose an arbitrary path or other record payload when the prefix alone is sufficient to identify the unsupported form.
+
+Automated tests should prove that unsupported records cannot be silently skipped.
+
+## 4. Canonical Porcelain-v2 Parser Reuse
+
+The Milestone 001 porcelain-v2 parser is the controlling implementation for status-record semantics.
+
+Milestone 006 must reuse it wherever applicable.
+
+Do not create a second competing parser for:
+
+    ordinary
+    rename_or_copy
+    unmerged
+    untracked
+
+records.
+
+A narrowly necessary extension for Milestone 006 branch/header evidence is permitted, but:
+
+- existing record semantics must remain unchanged;
+- the same fail-closed philosophy applies;
+- existing Milestone 001 scanner behavior must continue to pass regression tests.
+
+If implementation appears to require materially incompatible duplicate status parsing:
+
+    STOP — ESCALATION REQUIRED
+
+Prefer extending shared Git-status infrastructure over forking the contract.
+
+## 5. Transactional Workflow Publication
+
+`workflow/status.json` and `workflow/status.md` form one successful workflow-status publication.
+
+Required publication semantics:
+
+1. compute the complete structured status;
+2. render both artifacts;
+3. stage both outside the final published pair;
+4. validate both;
+5. publish only after both are complete;
+6. on a controlled publication failure, preserve the previous successful status pair.
+
+Do not leave a new `status.json` paired with an old `status.md`, or vice versa.
+
+Reuse existing transactional publication helpers/patterns where practical.
+
+The exact filesystem swap/rename implementation is an ordinary engineering choice.
+
+Because workflow status is a replaceable current-state projection rather than immutable history, the contract requires transactional pair behavior but does not mandate the exact immutable-directory algorithm used by snapshots/comparisons.
+
+No temporary publication files may remain in the target repository.
+
+All workflow state remains under Repo Control Plane external state.
+
+## 6. Local-Ref Staleness Warning
+
+README and `status.md` must place the local-ref limitation directly alongside upstream ahead/behind reporting.
+
+Use wording equivalent to:
+
+    No Git fetch is performed.
+    Ahead/behind values describe locally available Git refs and may not
+    reflect the current state of the remote server.
+
+Do not describe:
+
+    ahead = 0
+    behind = 0
+
+as proof that the local branch is current with the actual remote server.
+
+It proves equality only against the locally available upstream ref.
+
+The CLI summary should likewise avoid wording such as:
+
+    remote is current
+    fully synchronized with GitHub
+
+Use factual wording such as:
+
+    Local upstream relation: equal
+    Ahead: 0
+    Behind: 0
+    Remote refresh: not performed
+
+## 7. Network Boundary Applies to Implementation and Validation
+
+Production `repoctl milestone status` must perform no network operation.
+
+Tests may create and manipulate local bare repositories as fixtures.
+
+Those fixture setup operations are test preparation and must remain clearly separate from the production status path.
+
+Tests should prove that the status implementation itself does not invoke:
+
+    fetch
+    pull
+    push
+
+or another remote-refresh operation.
+
+Do not use public Git hosting for automated divergence tests.
+
+## 8. Required Clarification Tests
+
+In addition to the original Milestone 006 test requirements, explicitly verify:
+
+- no configured upstream produces `upstream_not_configured`;
+- configured but unavailable local upstream ref produces `upstream_ref_unavailable`;
+- available divergence has `unavailable_reason = null`;
+- active Git operations are represented only by the fixed ordered operation names;
+- Git-internal operation metadata paths are not published;
+- unsupported porcelain-v2 records fail with `unsupported_porcelain_v2_record`;
+- safe unsupported-record diagnostics do not expose the full raw record;
+- existing Milestone 001 porcelain-v2 semantics remain authoritative;
+- workflow publication cannot leave mismatched `status.json` / `status.md` after a controlled failure;
+- previous successful workflow artifacts survive a controlled replacement failure;
+- README/status Markdown explicitly state that no fetch occurs and locally available upstream refs may be stale.
+
+These are refinements of existing Milestone 006 requirements, not additional feature scope.
+
+## 9. Proceed Instruction
+
+No further pre-coding clarification is required if the initial Git preflight passes.
+
+Proceed with:
+
+    clean preflight
+        ↓
+    shared read-only Git-state inspection
+        ↓
+    workflow-state classification
+        ↓
+    active-operation detection
+        ↓
+    local upstream divergence
+        ↓
+    current snapshot-candidate calculation
+        ↓
+    exact snapshot integrity check
+        ↓
+    transactional status publication
+        ↓
+    fixture and Vocab App validation
+
+Make ordinary implementation choices locally after these contracts are satisfied.
+
+Ask for Product Owner input only if a genuine scope, read-only safety, parser-compatibility, or architecture conflict is encountered.
