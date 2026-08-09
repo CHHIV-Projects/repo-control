@@ -1280,3 +1280,364 @@ Milestone 004 passes only if:
 - Vocab App is not modified;
 - all automated tests pass;
 - no AI, semantic judgment, Git writes, Docker, or Photo Organizer access is introduced.
+
+
+# Product Owner / Architect Clarification Addendum — Milestone 004 Identity and Immutability Contract
+
+This addendum resolves the remaining pre-coding determinism and immutability questions.
+
+It does not broaden Milestone 004 scope.
+
+## 1. Snapshot Verification Before Initial Publication
+
+A newly created snapshot must be integrity-verified before it becomes the published immutable snapshot.
+
+Required flow:
+
+    fresh deterministic scan
+        ->
+    construct staged snapshot contents
+        ->
+    calculate artifact hashes from staged bytes
+        ->
+    construct snapshot.json
+        ->
+    verify every staged artifact against snapshot.json
+        ->
+    verify required artifact set
+        ->
+    derive/verify snapshot_id
+        ->
+    atomically publish snapshot directory
+
+A staged snapshot must not be published unless all required integrity checks pass.
+
+At minimum verify before publication:
+
+- all required snapshot artifacts exist;
+- no unexpected snapshot artifacts exist;
+- each recorded artifact SHA-256 equals the exact staged artifact bytes;
+- snapshot ID recomputed from the staged artifacts equals the proposed snapshot ID;
+- repository ID in snapshot metadata matches the selected repository;
+- snapshot schema version is supported.
+
+If verification fails:
+
+- fail closed;
+- do not publish the staged snapshot;
+- do not alter an existing snapshot;
+- do not leave a partial final snapshot directory.
+
+Post-publication reuse/load verification remains required as specified by the original prompt.
+
+The same immutable evidence must therefore be validated both:
+
+    before first publication
+
+and:
+
+    whenever an existing snapshot is reused or loaded.
+
+## 2. Canonical Symbol Stream and `occurrence_ordinal`
+
+Milestone 004 must derive symbol occurrence ordinals from one canonical normalized stream of all recorded top-level symbols for each file.
+
+Do not assign ordinals independently from separate function/class/async-function collections.
+
+Normalize all top-level symbol records for a file into one stream ordered by:
+
+1. `start_line` ascending;
+2. `end_line` ascending;
+3. `symbol_kind` using deterministic encoded string ordering;
+4. `symbol_name` using deterministic encoded string ordering.
+
+If an underlying artifact lacks one of the line fields, missing position sorts after known positions.
+
+After normalization, assign `occurrence_ordinal` independently within each group having the same:
+
+    relative_path
+    symbol_kind
+    symbol_name
+
+The first occurrence is:
+
+    occurrence_ordinal = 1
+
+then:
+
+    2
+    3
+    ...
+
+Stable symbol comparison identity is therefore:
+
+    (
+        relative_path,
+        symbol_kind,
+        symbol_name,
+        occurrence_ordinal
+    )
+
+Source line is not part of stable symbol identity after the ordinal is assigned.
+
+This ensures ordinary source-line movement does not create false symbol removal/addition evidence.
+
+## 3. Relationship Diagnostic Stable Identity
+
+For Milestone 004 schema version 1, stable identity for a relationship diagnostic is exactly:
+
+    (
+        reason,
+        relationship_kind,
+        source_file,
+        source_symbol,
+        reference,
+        candidates
+    )
+
+where:
+
+- `reason` is the deterministic Milestone 002 reason value;
+- `relationship_kind` is the deterministic relationship kind;
+- `source_file` is the repository-relative path;
+- `source_symbol` is the recorded source symbol or null;
+- `reference` is the recorded deterministic reference value;
+- `candidates` is the exact deterministic candidate collection after established candidate ordering.
+
+`source_line` is explicitly excluded from diagnostic identity.
+
+Therefore, when an otherwise identical diagnostic moves to another source line:
+
+- it remains the same retained diagnostic;
+- its source-location change may be reported separately if useful;
+- it must not become an artificial removed + added pair.
+
+Do not add reason-specific hidden fields to diagnostic identity in Milestone 004.
+
+If two diagnostics share this complete identity, deduplicate them as one logical diagnostic record for comparison purposes while preserving deterministic occurrence/count evidence only if the existing artifacts genuinely contain distinguishable repeated records.
+
+Do not use arbitrary object serialization or source artifact iteration order as identity.
+
+## 4. Diagnostic Delta Scope
+
+Record-level diagnostic delta comparison remains focused on:
+
+    ambiguous_module
+    target_parse_failure
+    shadowed_or_rebound
+    unresolved_symbol
+    wildcard_import
+
+For those records report:
+
+    added
+    removed
+    retained
+
+and, when source line is available:
+
+    source_location_changed
+
+Generic:
+
+    no_tracked_module_match
+
+may contribute deterministic count evidence in `comparison.json` but must not become a dominant record-level Markdown audit stream.
+
+No diagnostic delta is automatically a defect or risk judgment.
+
+## 5. Markdown 50-Item Bound
+
+For:
+
+    MAX_MD_ITEMS_PER_SECTION = 50
+
+the limit applies to each complete top-level Markdown section.
+
+It does NOT apply independently to each subsection/category within that section.
+
+Example:
+
+    ## Symbol Changes
+
+may contain categories such as:
+
+    Added
+    Removed
+    Source Location Changed
+    Retained
+
+but the combined detailed records rendered under the complete:
+
+    ## Symbol Changes
+
+section may not exceed 50.
+
+Use this fixed category priority for bounded Markdown detail:
+
+    1. added
+    2. removed
+    3. source_location_changed
+    4. retained
+
+Equivalent relationship sections use:
+
+    1. added
+    2. removed
+    3. location_changed
+    4. retained
+
+File sections should prioritize actual changed categories before unchanged records.
+
+Within each category use the deterministic ordering already required by the original prompt.
+
+The section must report:
+
+- total qualifying record count;
+- rendered record count;
+- whether Markdown truncation occurred.
+
+`comparison.json` remains complete and untruncated.
+
+Do not create a separate 50-item allowance for each category.
+
+## 6. Self-Comparison Contract
+
+Comparing:
+
+    snapshot A
+        ->
+    snapshot A
+
+is valid.
+
+`comparison.json` must still contain the complete mechanically retained evidence.
+
+Therefore a self-comparison may report, for example:
+
+    files:
+        added = 0
+        removed = 0
+        content_changed = 0
+        unchanged = N
+
+    symbols:
+        added = 0
+        removed = 0
+        source_location_changed = 0
+        retained = N
+
+    calls:
+        added = 0
+        removed = 0
+        location_changed = 0
+        retained = N
+
+The same principle applies to dependencies, imported-symbol relationships, test references, diagnostics, and other retained structural evidence.
+
+"Zero structural delta" means:
+
+- zero additions;
+- zero removals;
+- zero content changes where applicable;
+- zero location changes;
+- zero introduced/resolved failures or diagnostics.
+
+It does NOT mean that retained records are discarded.
+
+Retained counts and records remain useful evidence that both snapshot sides were actually compared.
+
+`comparison.md` remains subject to its normal bounded rendering contract and does not need to dump every retained record.
+
+## 7. Compare Must Not Depend on Current Repository State
+
+For:
+
+    repoctl compare <before_snapshot_id> <after_snapshot_id> [--repository <path>]
+
+the repository path has exactly one current-state purpose:
+
+    resolve the canonical Git repository root
+        ->
+    derive repository_id
+        ->
+    locate that repository's snapshot/comparison state namespace
+
+After repository identity is resolved:
+
+- do not run the deterministic scanner;
+- do not inspect current source contents for comparison evidence;
+- do not use current HEAD to influence comparison;
+- do not use current dirty/clean status to influence comparison;
+- do not require current worktree state to match either snapshot.
+
+All comparison evidence comes exclusively from the two named immutable snapshots.
+
+The current repository may have changed substantially since either snapshot was captured.
+
+That must not alter comparison results.
+
+If identical snapshot IDs are compared today and again after unrelated target-repository changes, the resulting comparison artifacts must remain byte-for-byte identical.
+
+## 8. Shared Stable Identity Policy
+
+Use one canonical deterministic identity implementation for comparison entities where practical.
+
+It should define stable keys for:
+
+- files;
+- requirements records;
+- symbols;
+- module dependencies;
+- imported-symbol relationships;
+- static calls;
+- test references;
+- parse failures;
+- relationship diagnostics.
+
+Do not independently recreate subtly different identity rules in:
+
+- comparison calculations;
+- retained/add/remove classification;
+- Markdown ordering;
+- tests.
+
+Source-location fields must be kept separate from logical identity wherever the original Milestone 004 contract says ordinary line movement must not create structural churn.
+
+This does not require a large generic graph framework.
+
+A small shared identity module/helper is appropriate.
+
+## 9. Required Clarification Tests
+
+In addition to the original Milestone 004 test requirements, explicitly verify:
+
+- a staged snapshot is integrity-checked before first publication;
+- failed staged integrity verification leaves no published partial snapshot;
+- canonical symbol occurrence ordinals come from one normalized source-order stream;
+- duplicate same-name symbols receive stable occurrence ordinals;
+- diagnostic source-line movement does not become diagnostic removal + addition;
+- diagnostic stable identity includes ordered candidates;
+- each Markdown top-level section receives one aggregate 50-item limit;
+- changed records are rendered before retained records when Markdown truncation occurs;
+- self-comparison preserves retained records/counts while all actual delta counts remain zero;
+- changing the current repository after snapshot capture does not alter a comparison between the same two named snapshots.
+
+These are refinements of existing Milestone 004 behavior, not new feature scope.
+
+## 10. Scope Lock
+
+These clarifications do not authorize:
+
+- target-repository mutation;
+- Git-history traversal;
+- rename detection;
+- source-body semantic comparison;
+- runtime execution;
+- architecture interpretation;
+- risk scoring;
+- AI;
+- Docker;
+- Photo Organizer access.
+
+Proceed with the smallest implementation satisfying the original Milestone 004 prompt plus this addendum.
