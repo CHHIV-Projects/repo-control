@@ -133,7 +133,14 @@ def main(argv: list[str] | None = None) -> int:
         repository_path = args.repository if args.repository else str(Path.cwd())
         try:
             analysis_result = analyze_comparison(args.comparison_id, repository_path)
-        except (AnalysisError, ScanError) as exc:
+        except AnalysisError as exc:
+            msg = str(exc)
+            if msg.startswith("provider error ["):
+                print(msg, file=sys.stderr)
+            else:
+                print(f"analyze failed: {msg}", file=sys.stderr)
+            return 2
+        except ScanError as exc:
             print(f"analyze failed: {exc}", file=sys.stderr)
             return 2
         except Exception as exc:

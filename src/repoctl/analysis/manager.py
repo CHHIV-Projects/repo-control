@@ -30,6 +30,18 @@ class AnalysisError(RuntimeError):
     pass
 
 
+def _classify_validation_failure(message: str) -> str:
+    grounding_markers = [
+        "unknown evidence id",
+        "duplicate evidence id",
+        "zero-delta",
+        "non-zero comparison response must include at least one review signal",
+    ]
+    if any(marker in message for marker in grounding_markers):
+        return "evidence_grounding_validation_failed"
+    return "structured_content_validation_failed"
+
+
 def create_ollama_provider() -> AnalysisProvider:
     return OllamaLocalProvider()
 
@@ -211,7 +223,7 @@ def analyze_comparison(
     try:
         model_identity = selected_provider.resolve_model_identity()
     except ProviderError as exc:
-        raise AnalysisError(f"provider preflight failed: {exc}") from exc
+        raise AnalysisError(str(exc)) from exc
 
     if model_identity.provider != MODEL_PROVIDER:
         raise AnalysisError("unexpected model provider")
@@ -234,7 +246,7 @@ def analyze_comparison(
             prompt_contract_version=PROMPT_CONTRACT_VERSION,
         )
     except ProviderError as exc:
-        raise AnalysisError(f"provider request failed: {exc}") from exc
+        raise AnalysisError(str(exc)) from exc
 
     evidence_ids = [row["evidence_id"] for row in packet_payload["evidence_records"]]
     try:
@@ -244,7 +256,9 @@ def analyze_comparison(
             structural_delta_present=packet_payload["structural_delta_present"],
         )
     except ResponseValidationError as exc:
-        raise AnalysisError(f"analysis response validation failed: {exc}") from exc
+        safe_message = str(exc).split("\n", 1)[0]
+        code = _classify_validation_failure(safe_message)
+        raise AnalysisError(f"provider error [{code}]: {safe_message}") from exc
 
     analysis_id = derive_analysis_id(request_id, normalized_output)
     analysis_json = _build_analysis_payload(

@@ -11,9 +11,19 @@ from .schema import build_provider_response_schema
 
 OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 
+FAIL_PROVIDER_HTTP = "provider_http_failure"
+FAIL_INVALID_ENVELOPE = "invalid_ollama_envelope"
+FAIL_MISSING_MESSAGE = "missing_message"
+FAIL_MISSING_CONTENT = "missing_message_content"
+FAIL_INVALID_CONTENT_TYPE = "invalid_message_content_type"
+FAIL_INVALID_CONTENT_JSON = "invalid_structured_content_json"
+
 
 class ProviderError(RuntimeError):
-    pass
+    def __init__(self, code: str, safe_message: str) -> None:
+        self.code = code
+        self.safe_message = safe_message
+        super().__init__(f"provider error [{code}]: {safe_message}")
 
 
 @dataclass(frozen=True)
@@ -82,31 +92,30 @@ class OllamaLocalProvider:
             with request.urlopen(req, timeout=self.timeout_seconds) as resp:
                 data = resp.read()
         except error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise ProviderError(f"ollama http error: {exc.code}: {detail}") from exc
+            raise ProviderError(FAIL_PROVIDER_HTTP, f"ollama http error status {exc.code}") from exc
         except error.URLError as exc:
-            raise ProviderError(f"ollama unavailable: {exc}") from exc
+            raise ProviderError(FAIL_PROVIDER_HTTP, f"ollama unavailable: {exc.__class__.__name__}") from exc
         except TimeoutError as exc:
-            raise ProviderError("ollama request timed out") from exc
+            raise ProviderError(FAIL_PROVIDER_HTTP, "ollama request timed out") from exc
 
         try:
             return json.loads(data.decode("utf-8"))
         except Exception as exc:
-            raise ProviderError("ollama response is not valid JSON") from exc
+            raise ProviderError(FAIL_INVALID_ENVELOPE, "ollama response body was not valid JSON") from exc
 
     def resolve_model_identity(self) -> ModelIdentity:
         payload = self._request_json("GET", "/api/tags")
         models = payload.get("models")
         if not isinstance(models, list):
-            raise ProviderError("ollama /api/tags response missing models list")
+            raise ProviderError(FAIL_INVALID_ENVELOPE, "ollama /api/tags response missing models list")
 
         matches = [model for model in models if isinstance(model, dict) and model.get("name") == MODEL_NAME]
         if len(matches) != 1:
-            raise ProviderError("required model gpt-oss:20b is not uniquely available from /api/tags")
+            raise ProviderError(FAIL_INVALID_ENVELOPE, "required model gpt-oss:20b was not uniquely available")
 
         digest = matches[0].get("digest")
         if not isinstance(digest, str) or not validate_model_digest(digest):
-            raise ProviderError("required model digest from /api/tags is missing or malformed")
+            raise ProviderError(FAIL_INVALID_ENVELOPE, "required model digest from /api/tags was missing or malformed")
 
         return ModelIdentity(provider=MODEL_PROVIDER, model_name=MODEL_NAME, model_digest=digest)
 
@@ -119,18 +128,18 @@ class OllamaLocalProvider:
         prompt_contract_version: str,
     ) -> dict[str, Any]:
         if model_identity.provider != MODEL_PROVIDER:
-            raise ProviderError("unexpected provider")
+            raise ProviderError(FAIL_INVALID_ENVELOPE, "unexpected provider")
         if model_identity.model_name != MODEL_NAME:
-            raise ProviderError("unexpected model name")
+            raise ProviderError(FAIL_INVALID_ENVELOPE, "unexpected model name")
         if not validate_model_digest(model_identity.model_digest):
-            raise ProviderError("unexpected model digest")
+            raise ProviderError(FAIL_INVALID_ENVELOPE, "unexpected model digest")
 
         body = {
             "model": model_identity.model_name,
             "stream": False,
             "format": build_provider_response_schema(),
             "options": {"temperature": 0},
-            "think": False,
+            "think": "low",
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {
@@ -147,17 +156,17 @@ class OllamaLocalProvider:
 
         message = payload.get("message")
         if not isinstance(message, dict):
-            raise ProviderError("ollama response missing message object")
+            raise ProviderError(FAIL_MISSING_MESSAGE, "ollama response missing message object")
         content = message.get("content")
-        if isinstance(content, dict):
-            return content
+        if content is None:
+            raise ProviderError(FAIL_MISSING_CONTENT, "ollama response missing message.content")
         if not isinstance(content, str):
-            raise ProviderError("ollama response content missing")
+            raise ProviderError(FAIL_INVALID_CONTENT_TYPE, "message.content was not a string")
 
         try:
             parsed = json.loads(content)
         except Exception as exc:
-            raise ProviderError("ollama structured response is not valid JSON") from exc
+            raise ProviderError(FAIL_INVALID_CONTENT_JSON, "message.content was not valid JSON") from exc
         if not isinstance(parsed, dict):
-            raise ProviderError("ollama structured response must be a JSON object")
+            raise ProviderError(FAIL_INVALID_CONTENT_JSON, "message.content JSON was not an object")
         return parsed

@@ -4,13 +4,25 @@ import json
 import subprocess
 import tempfile
 import unittest
+from io import StringIO
 from pathlib import Path
 from unittest import mock
+from contextlib import redirect_stderr
 
 from repoctl.analysis.contracts import MAX_ANALYSIS_PACKET_BYTES, derive_request_id
 from repoctl.analysis.manager import AnalysisError, analyze_comparison
 from repoctl.analysis.packet import build_analysis_packet
-from repoctl.analysis.provider import ModelIdentity, OllamaLocalProvider
+from repoctl.analysis.provider import (
+    FAIL_INVALID_CONTENT_JSON,
+    FAIL_INVALID_CONTENT_TYPE,
+    FAIL_INVALID_ENVELOPE,
+    FAIL_MISSING_CONTENT,
+    FAIL_MISSING_MESSAGE,
+    FAIL_PROVIDER_HTTP,
+    ModelIdentity,
+    OllamaLocalProvider,
+    ProviderError,
+)
 from repoctl.cli import main
 from repoctl.compare.manager import compare_snapshots
 from repoctl.scanner.core import run_scan_with_artifacts
@@ -140,8 +152,61 @@ class StubOllamaProvider(OllamaLocalProvider):
                         {
                             "summary": "ok",
                             "summary_evidence_ids": ["A001"],
-                            "review_signals": [],
-                            "questions_for_human_review": [],
+                            "review_signals": [
+                                {
+                                    "category": "cross_category",
+                                    "review_priority": "low",
+                                    "observation": "obs",
+                                    "interpretation": "interp",
+                                    "evidence_ids": ["A001"],
+                                }
+                            ],
+                            "questions_for_human_review": [
+                                {
+                                    "review_priority": "low",
+                                    "question": "q",
+                                    "evidence_ids": ["A001"],
+                                }
+                            ],
+                        }
+                    )
+                }
+            }
+        raise RuntimeError("unexpected path")
+
+
+class CaptureRequestProvider(OllamaLocalProvider):
+    def __init__(self) -> None:
+        super().__init__(base_url="http://127.0.0.1:11434")
+        self.chat_body = None
+
+    def _request_json(self, method: str, path: str, body=None):
+        if path == "/api/tags":
+            return {"models": [{"name": "gpt-oss:20b", "digest": "b" * 64}]}
+        if path == "/api/chat":
+            self.chat_body = body
+            return {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "summary": "ok",
+                            "summary_evidence_ids": ["A001"],
+                            "review_signals": [
+                                {
+                                    "category": "cross_category",
+                                    "review_priority": "low",
+                                    "observation": "obs",
+                                    "interpretation": "interp",
+                                    "evidence_ids": ["A001"],
+                                }
+                            ],
+                            "questions_for_human_review": [
+                                {
+                                    "review_priority": "low",
+                                    "question": "q",
+                                    "evidence_ids": ["A001"],
+                                }
+                            ],
                         }
                     )
                 }
@@ -311,6 +376,211 @@ class AnalysisTests(unittest.TestCase):
         identity = provider.resolve_model_identity()
         self.assertEqual(identity.model_name, "gpt-oss:20b")
         self.assertEqual(provider.calls, ["/api/tags"])
+
+    def test_provider_request_uses_think_low_and_no_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            state = root / "state"
+            ids = _make_comparison(repo, state, mutate=True)
+
+            provider = CaptureRequestProvider()
+            analyze_comparison(ids["comparison_id"], str(repo), state_root=state, provider=provider)
+
+            self.assertIsNotNone(provider.chat_body)
+            self.assertEqual(provider.chat_body["think"], "low")
+            self.assertNotIn("tools", provider.chat_body)
+            self.assertEqual(provider.chat_body["stream"], False)
+            self.assertEqual(provider.chat_body["options"], {"temperature": 0})
+            self.assertIn("format", provider.chat_body)
+            self.assertIsInstance(provider.chat_body["format"], dict)
+
+    def test_provider_rejects_missing_message(self) -> None:
+        class P(OllamaLocalProvider):
+            def _request_json(self, method: str, path: str, body=None):
+                if path == "/api/tags":
+                    return {"models": [{"name": "gpt-oss:20b", "digest": "b" * 64}]}
+                return {}
+
+        p = P()
+        with self.assertRaises(ProviderError) as ctx:
+            p.generate_analysis(
+                model_identity=ModelIdentity("ollama", "gpt-oss:20b", "b" * 64),
+                packet_payload={"x": 1},
+                request_id="x",
+                prompt_contract_version="repoctl-structural-analysis-v1",
+            )
+        self.assertEqual(ctx.exception.code, FAIL_MISSING_MESSAGE)
+
+    def test_provider_http_failure_code(self) -> None:
+        class P(OllamaLocalProvider):
+            def _request_json(self, method: str, path: str, body=None):
+                if path == "/api/tags":
+                    return {"models": [{"name": "gpt-oss:20b", "digest": "b" * 64}]}
+                raise ProviderError(FAIL_PROVIDER_HTTP, "ollama unavailable: URLError")
+
+        p = P()
+        with self.assertRaises(ProviderError) as ctx:
+            p.generate_analysis(
+                model_identity=ModelIdentity("ollama", "gpt-oss:20b", "b" * 64),
+                packet_payload={"x": 1},
+                request_id="x",
+                prompt_contract_version="repoctl-structural-analysis-v1",
+            )
+        self.assertEqual(ctx.exception.code, FAIL_PROVIDER_HTTP)
+
+    def test_provider_invalid_envelope_code(self) -> None:
+        class P(OllamaLocalProvider):
+            def _request_json(self, method: str, path: str, body=None):
+                if path == "/api/tags":
+                    return {"models": [{"name": "gpt-oss:20b", "digest": "b" * 64}]}
+                raise ProviderError(FAIL_INVALID_ENVELOPE, "ollama response body was not valid JSON")
+
+        p = P()
+        with self.assertRaises(ProviderError) as ctx:
+            p.generate_analysis(
+                model_identity=ModelIdentity("ollama", "gpt-oss:20b", "b" * 64),
+                packet_payload={"x": 1},
+                request_id="x",
+                prompt_contract_version="repoctl-structural-analysis-v1",
+            )
+        self.assertEqual(ctx.exception.code, FAIL_INVALID_ENVELOPE)
+
+    def test_provider_rejects_missing_message_content(self) -> None:
+        class P(OllamaLocalProvider):
+            def _request_json(self, method: str, path: str, body=None):
+                if path == "/api/tags":
+                    return {"models": [{"name": "gpt-oss:20b", "digest": "b" * 64}]}
+                return {"message": {}}
+
+        p = P()
+        with self.assertRaises(ProviderError) as ctx:
+            p.generate_analysis(
+                model_identity=ModelIdentity("ollama", "gpt-oss:20b", "b" * 64),
+                packet_payload={"x": 1},
+                request_id="x",
+                prompt_contract_version="repoctl-structural-analysis-v1",
+            )
+        self.assertEqual(ctx.exception.code, FAIL_MISSING_CONTENT)
+
+    def test_provider_rejects_non_string_message_content(self) -> None:
+        class P(OllamaLocalProvider):
+            def _request_json(self, method: str, path: str, body=None):
+                if path == "/api/tags":
+                    return {"models": [{"name": "gpt-oss:20b", "digest": "b" * 64}]}
+                return {"message": {"content": {"x": 1}}}
+
+        p = P()
+        with self.assertRaises(ProviderError) as ctx:
+            p.generate_analysis(
+                model_identity=ModelIdentity("ollama", "gpt-oss:20b", "b" * 64),
+                packet_payload={"x": 1},
+                request_id="x",
+                prompt_contract_version="repoctl-structural-analysis-v1",
+            )
+        self.assertEqual(ctx.exception.code, FAIL_INVALID_CONTENT_TYPE)
+
+    def test_provider_rejects_invalid_structured_content_json(self) -> None:
+        class P(OllamaLocalProvider):
+            def _request_json(self, method: str, path: str, body=None):
+                if path == "/api/tags":
+                    return {"models": [{"name": "gpt-oss:20b", "digest": "b" * 64}]}
+                return {"message": {"content": "not-json"}}
+
+        p = P()
+        with self.assertRaises(ProviderError) as ctx:
+            p.generate_analysis(
+                model_identity=ModelIdentity("ollama", "gpt-oss:20b", "b" * 64),
+                packet_payload={"x": 1},
+                request_id="x",
+                prompt_contract_version="repoctl-structural-analysis-v1",
+            )
+        self.assertEqual(ctx.exception.code, FAIL_INVALID_CONTENT_JSON)
+
+    def test_provider_rejects_markdown_fenced_and_prose_wrapped_json(self) -> None:
+        class P1(OllamaLocalProvider):
+            def _request_json(self, method: str, path: str, body=None):
+                if path == "/api/tags":
+                    return {"models": [{"name": "gpt-oss:20b", "digest": "b" * 64}]}
+                return {"message": {"content": "```json\\n{\"summary\":\"x\"}\\n```"}}
+
+        class P2(OllamaLocalProvider):
+            def _request_json(self, method: str, path: str, body=None):
+                if path == "/api/tags":
+                    return {"models": [{"name": "gpt-oss:20b", "digest": "b" * 64}]}
+                return {"message": {"content": "prefix {\"summary\":\"x\"} suffix"}}
+
+        for provider in (P1(), P2()):
+            with self.assertRaises(ProviderError) as ctx:
+                provider.generate_analysis(
+                    model_identity=ModelIdentity("ollama", "gpt-oss:20b", "b" * 64),
+                    packet_payload={"x": 1},
+                    request_id="x",
+                    prompt_contract_version="repoctl-structural-analysis-v1",
+                )
+            self.assertEqual(ctx.exception.code, FAIL_INVALID_CONTENT_JSON)
+
+    def test_thinking_content_never_leaked_in_provider_error_message(self) -> None:
+        secret = "THINKING_SECRET_12345"
+
+        class P(OllamaLocalProvider):
+            def _request_json(self, method: str, path: str, body=None):
+                if path == "/api/tags":
+                    return {"models": [{"name": "gpt-oss:20b", "digest": "b" * 64}]}
+                return {"message": {"thinking": secret, "content": "not-json"}}
+
+        p = P()
+        with self.assertRaises(ProviderError) as ctx:
+            p.generate_analysis(
+                model_identity=ModelIdentity("ollama", "gpt-oss:20b", "b" * 64),
+                packet_payload={"x": 1},
+                request_id="x",
+                prompt_contract_version="repoctl-structural-analysis-v1",
+            )
+        self.assertNotIn(secret, str(ctx.exception))
+
+    def test_cli_provider_error_shape(self) -> None:
+        with mock.patch(
+            "repoctl.cli.analyze_comparison",
+            side_effect=AnalysisError("provider error [invalid_structured_content_json]: message.content was not valid JSON"),
+        ):
+            buf = StringIO()
+            with redirect_stderr(buf):
+                code = main(["analyze", "cmp--x", "--repository", "/tmp/repo"])
+            self.assertEqual(code, 2)
+            self.assertIn("provider error [invalid_structured_content_json]: message.content was not valid JSON", buf.getvalue())
+            self.assertNotIn("analyze failed:", buf.getvalue())
+
+    def test_validation_error_codes_distinguish_schema_and_grounding(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            state = root / "state"
+            ids = _make_comparison(repo, state, mutate=True)
+
+            schema_bad = {
+                "summary": "x",
+                "summary_evidence_ids": ["A001"],
+                "review_signals": [
+                    {
+                        "category": "not-a-category",
+                        "review_priority": "low",
+                        "observation": "obs",
+                        "interpretation": "interp",
+                        "evidence_ids": ["A001"],
+                    }
+                ],
+                "questions_for_human_review": [],
+            }
+            with self.assertRaises(AnalysisError) as ctx1:
+                analyze_comparison(ids["comparison_id"], str(repo), state_root=state, provider=FakeProvider(schema_bad))
+            self.assertIn("provider error [structured_content_validation_failed]", str(ctx1.exception))
+
+            grounding_bad = _valid_response({}, non_zero=True)
+            grounding_bad["summary_evidence_ids"] = ["Z999"]
+            with self.assertRaises(AnalysisError) as ctx2:
+                analyze_comparison(ids["comparison_id"], str(repo), state_root=state, provider=FakeProvider(grounding_bad))
+            self.assertIn("provider error [evidence_grounding_validation_failed]", str(ctx2.exception))
 
     def test_analyze_does_not_change_target_git_state(self) -> None:
         with tempfile.TemporaryDirectory() as td:
