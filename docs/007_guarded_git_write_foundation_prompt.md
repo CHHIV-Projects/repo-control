@@ -1213,3 +1213,86 @@ Milestone 007 passes only if:
 Successful completion establishes the first trusted human-approved Git-write primitive for Repo Control Plane.
 
 The next milestones may then build higher-level workflow operations—such as controlled staging, richer milestone review, push preparation/execution, and the initial browser-based UI—on top of this same prepare/revalidate/approve/execute/verify architecture.
+
+
+
+
+Confirmed. Proceed with Milestone 007 implementation.
+
+1. Hook boundary strictness — CONFIRMED
+
+For Milestone 007, use the strict interpretation you proposed.
+
+Block commit execution if either is true:
+
+- any relevant commit hook exists and is executable in the resolved hooks directory; or
+- `core.hooksPath` is configured to a custom path.
+
+For this first Git-mutation milestone, a custom hooksPath should be treated as an unsupported/uncertain execution environment even when no active hook is presently found there.
+
+Do not attempt to prove a custom hooksPath harmless, execute its hooks, or bypass hooks with `--no-verify`.
+
+Return the bounded `unsupported_git_hooks` condition.
+
+This restriction can be relaxed in a later milestone if we deliberately add deterministic hook-awareness.
+
+2. Staged fingerprint canonical contract — CONFIRMED
+
+Use canonicalized staged raw records from Git plumbing with rename heuristics disabled.
+
+The fingerprint should deterministically bind the reviewed plan to:
+
+- current HEAD;
+- exact staged path set;
+- staged status;
+- old/new object IDs;
+- old/new modes;
+- additions/deletions/modifications as represented by the canonical staged records;
+- any other raw staged metadata required to distinguish the actual index delta.
+
+Use an unambiguous canonical serialization, including safe path boundaries/encoding, and hash that representation.
+
+Do not include source bodies or a full textual diff.
+
+The critical acceptance property is:
+
+    any material change to the staged index state
+        => different fingerprint
+        => existing plan becomes stale and execution blocks
+
+This includes content replacement under the same filename, staged file-set changes, deletions, and mode changes.
+
+Do not use a Git operation that creates repository objects merely to calculate the fingerprint.
+
+3. Plan and execution ID determinism — CONFIRMED
+
+Deterministic/content-derived IDs are preferred.
+
+For plans:
+
+- exact same canonical plan content should resolve to the same plan ID;
+- repeated `prepare-commit` against the identical HEAD, staged state, snapshot, repository, branch, and exact commit message may reuse the existing immutable plan artifact;
+- if that existing artifact is present, verify its integrity rather than overwrite it.
+
+For executions:
+
+- use an identity derived from the resulting commit, with the plan identity included if needed to make the audit identity unambiguous;
+- an existing identical immutable execution record may be reused only after integrity verification;
+- never overwrite an immutable artifact with different content.
+
+If an expected deterministic ID already exists with inconsistent content, fail closed as an integrity error rather than replacing it.
+
+Your remaining implementation direction is also confirmed:
+
+- reuse M006 `git_state.py` / `status.py` semantics rather than creating another Git-state parser;
+- keep prepare target-repository read-only;
+- require exact plan-specific explicit approval;
+- revalidate repository identity, branch, HEAD, staged fingerprint, and all blocking state immediately before mutation;
+- force bounded non-interactive ordinary commit behavior and suppress implicit signing;
+- distinguish `commit_succeeded_audit_failed` so a successful Git commit can never be mistaken for a failed commit that should be retried;
+- use disposable temporary repositories for every mutation/synthetic Git-state test;
+- never create synthetic Git-operation markers in the Repo Control Plane development repository.
+
+No prompt amendment is required.
+
+STATUS: CLEARED TO CODE MILESTONE 007.
