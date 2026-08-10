@@ -28,6 +28,11 @@ Milestone 007 adds a guarded local commit foundation with immutable planning and
 repoctl milestone prepare-commit --message "<commit message>" [--repository <path>]
 repoctl milestone commit <plan_id> --approve [--repository <path>]
 
+Milestone 008 adds guarded staging preparation with immutable exact path plans and explicit approval:
+
+repoctl milestone prepare-stage --all [--repository <path>]
+repoctl milestone stage <plan_id> --approve [--repository <path>]
+
 ## Development install
 
 ```bash
@@ -49,6 +54,8 @@ repoctl analyze cmp--abcdef0123456789 --repository /path/to/git/repo
 repoctl milestone status --repository /path/to/git/repo
 repoctl milestone prepare-commit --repository /path/to/git/repo --message "Complete Milestone 007"
 repoctl milestone commit commit-plan--abcdef0123456789 --approve --repository /path/to/git/repo
+repoctl milestone prepare-stage --repository /path/to/git/repo --all
+repoctl milestone stage stage-plan--abcdef0123456789 --approve --repository /path/to/git/repo
 ```
 
 ## External state location
@@ -130,6 +137,24 @@ with:
 - execution.json
 - execution.md
 
+Milestone 008 stage plans are written under:
+
+~/.local/share/repoctl/<repository_id>/workflow/stage_plans/<plan_id>/
+
+with:
+
+- plan.json
+- plan.md
+
+Milestone 008 stage execution evidence is written under:
+
+~/.local/share/repoctl/<repository_id>/workflow/stage_executions/<execution_id>/
+
+with:
+
+- execution.json
+- execution.md
+
 Guarded write constraints in Milestone 007:
 
 - `prepare-commit` is read-only toward the target repository.
@@ -138,6 +163,16 @@ Guarded write constraints in Milestone 007:
 - No fetch, pull, push, merge, rebase, amend, or auto-staging occurs.
 - No AI component authorizes or rewrites commit decisions/messages.
 - Custom hooks environments or executable commit hooks are blocked (`unsupported_git_hooks`).
+
+Guarded staging constraints in Milestone 008:
+
+- `prepare-stage --all` is read-only toward the target repository.
+- Starting index must be clean; existing staged changes block planning.
+- Candidate enumeration is deterministic and Git-derived; ignored files are excluded.
+- Custom Git filter drivers are blocked (`unsupported_git_filters`).
+- Execution stages only the exact reviewed path set from the immutable plan.
+- No uncontrolled recomputed `git add .` or `git add -A` is used.
+- No commit, fetch, pull, or push occurs in the staging path.
 
 Milestone 006 `workflow_state` enum values are:
 

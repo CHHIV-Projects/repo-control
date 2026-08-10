@@ -13,6 +13,8 @@ from .snapshot.manager import create_snapshot
 from .workflow.commit_execution import execute_prepared_commit
 from .workflow.commit_plan import prepare_commit
 from .workflow.errors import WorkflowReasonError
+from .workflow.stage_execution import execute_prepared_stage
+from .workflow.stage_plan import prepare_stage
 from .workflow.status import WorkflowError, generate_milestone_status
 
 
@@ -52,6 +54,15 @@ def build_parser() -> argparse.ArgumentParser:
     milestone_commit_parser.add_argument("plan_id", help="Prepared immutable commit plan identifier")
     milestone_commit_parser.add_argument("--approve", action="store_true", help="Explicitly approve exact plan execution")
     milestone_commit_parser.add_argument("--repository", help="Path inside target Git repository")
+    milestone_prepare_stage_parser = milestone_subparsers.add_parser(
+        "prepare-stage", help="Prepare immutable exact staging plan"
+    )
+    milestone_prepare_stage_parser.add_argument("--all", action="store_true", required=True, help="Stage all currently visible eligible changes from the reviewed plan")
+    milestone_prepare_stage_parser.add_argument("--repository", help="Path inside target Git repository")
+    milestone_stage_parser = milestone_subparsers.add_parser("stage", help="Execute prepared immutable staging plan")
+    milestone_stage_parser.add_argument("plan_id", help="Prepared immutable stage plan identifier")
+    milestone_stage_parser.add_argument("--approve", action="store_true", help="Explicitly approve exact stage plan execution")
+    milestone_stage_parser.add_argument("--repository", help="Path inside target Git repository")
 
     return parser
 
@@ -304,6 +315,76 @@ def main(argv: list[str] | None = None) -> int:
         print(f"HEAD before: {result['head_before']}")
         print(f"HEAD after: {result['head_after']}")
         print("Remote refresh: not performed")
+        print("Push performed: false")
+        print(f"execution_dir: {result['execution_dir']}")
+        print(f"reused_existing: {result['reused_existing']}")
+        return 0
+
+    if args.command == "milestone" and args.milestone_command == "prepare-stage":
+        repository_path = args.repository if args.repository else str(Path.cwd())
+        try:
+            result = prepare_stage(repository_path=repository_path, include_all=args.all)
+        except WorkflowReasonError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        except WorkflowError as exc:
+            print(f"milestone prepare-stage failed: {exc}", file=sys.stderr)
+            return 2
+        except ScanError as exc:
+            print(f"milestone prepare-stage failed: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:
+            print(f"milestone prepare-stage failed: {exc}", file=sys.stderr)
+            return 1
+
+        branch_text = result["branch"]["name"] if result["branch"]["state"] == "attached" else "(detached)"
+        print("prepared staging plan")
+        print(f"Repository: {result['repository_root']}")
+        print(f"Branch: {branch_text}")
+        print(f"HEAD: {result['head']}")
+        print(f"Changes proposed for staging: {result['candidate_record_count']}")
+        for item in result["candidate_summary"]:
+            print(f"  {item['status']} {item['path']}")
+        print(f"Existing staged changes: {result['staged_count']}")
+        print(f"Conflicts: {result['unmerged_count']}")
+        print(f"Git operation: {'active' if result['git_operation_in_progress'] else 'none'}")
+        print(f"Plan: {result['plan_id']}")
+        print("NO TARGET GIT MUTATION PERFORMED")
+        print("To approve this exact plan:")
+        print(f"  repoctl milestone stage {result['plan_id']} --approve")
+        print(f"plan_dir: {result['plan_dir']}")
+        print(f"reused_existing: {result['reused_existing']}")
+        return 0
+
+    if args.command == "milestone" and args.milestone_command == "stage":
+        repository_path = args.repository if args.repository else str(Path.cwd())
+        try:
+            result = execute_prepared_stage(repository_path=repository_path, plan_id=args.plan_id, approve=args.approve)
+        except WorkflowReasonError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        except WorkflowError as exc:
+            print(f"milestone stage failed: {exc}", file=sys.stderr)
+            return 2
+        except ScanError as exc:
+            print(f"milestone stage failed: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:
+            print(f"milestone stage failed: {exc}", file=sys.stderr)
+            return 1
+
+        print("milestone stage complete")
+        print(f"Repository: {result['repository_root']}")
+        print(f"Plan: {result['plan_id']}")
+        print(f"Execution: {result['execution_id']}")
+        print(f"Branch: {result['branch']}")
+        print(f"HEAD before: {result['head_before']}")
+        print(f"HEAD after: {result['head_after']}")
+        print(f"Staged paths: {result['candidate_record_count']}")
+        for item in result["staged_summary"]:
+            print(f"  {item['status']} {item['path']}")
+        print("Remote refresh: not performed")
+        print("Commit performed: false")
         print("Push performed: false")
         print(f"execution_dir: {result['execution_dir']}")
         print(f"reused_existing: {result['reused_existing']}")
