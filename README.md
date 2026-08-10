@@ -33,6 +33,10 @@ Milestone 008 adds guarded staging preparation with immutable exact path plans a
 repoctl milestone prepare-stage --all [--repository <path>]
 repoctl milestone stage <plan_id> --approve [--repository <path>]
 
+Milestone 009 adds a local browser UI foundation over existing core services:
+
+repoctl web --repository <path> [--host 127.0.0.1] [--port 8765]
+
 ## Development install
 
 ```bash
@@ -56,7 +60,53 @@ repoctl milestone prepare-commit --repository /path/to/git/repo --message "Compl
 repoctl milestone commit commit-plan--abcdef0123456789 --approve --repository /path/to/git/repo
 repoctl milestone prepare-stage --repository /path/to/git/repo --all
 repoctl milestone stage stage-plan--abcdef0123456789 --approve --repository /path/to/git/repo
+repoctl web --repository /path/to/git/repo
 ```
+
+## Browser UI (Milestone 009)
+
+Start the local server:
+
+```bash
+repoctl web --repository /path/to/git/repo
+```
+
+Default bind behavior is loopback-only (`127.0.0.1`) in Milestone 009.
+Non-loopback host binding is blocked.
+
+Default browser URL:
+
+```text
+http://127.0.0.1:8765
+```
+
+Current pages and capabilities:
+
+- Dashboard (deterministic workflow status)
+- Context (deterministic context generation and rendering)
+- Snapshots (list/create immutable snapshots)
+- Comparisons (list/create structural comparisons)
+- AI Review (run/read local GPT-OSS comparison analysis)
+- Workflow (read-only stage/commit plan and execution visibility)
+
+Milestone 009 explicit boundary:
+
+- Browser routes do not stage, commit, push, fetch, or pull.
+- M007/M008 mutation execution remains CLI-only in this milestone.
+
+Windows access from a remote workstation can use SSH port forwarding, for example:
+
+```bash
+ssh -N -L 8765:127.0.0.1:8765 chuck@192.168.1.173
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8765
+```
+
+Stop the server with Ctrl+C in the terminal running `repoctl web`.
 
 ## External state location
 

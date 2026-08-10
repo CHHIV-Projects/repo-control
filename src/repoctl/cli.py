@@ -10,6 +10,7 @@ from .context.generator import build_and_publish_context
 from .scanner.core import run_scan, run_scan_with_artifacts
 from .scanner.git_ops import ScanError
 from .snapshot.manager import create_snapshot
+from .web.app import run_web_server
 from .workflow.commit_execution import execute_prepared_commit
 from .workflow.commit_plan import prepare_commit
 from .workflow.errors import WorkflowReasonError
@@ -40,6 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_parser = subparsers.add_parser("analyze", help="Analyze one immutable comparison with local GPT-OSS")
     analyze_parser.add_argument("comparison_id", help="Comparison identifier")
     analyze_parser.add_argument("--repository", help="Path inside target Git repository")
+
+    web_parser = subparsers.add_parser("web", help="Start local browser UI")
+    web_parser.add_argument("--repository", required=True, help="Path to target Git repository")
+    web_parser.add_argument("--host", default="127.0.0.1", help="Bind host (M009 loopback only)")
+    web_parser.add_argument("--port", default=8765, type=int, help="Bind port")
 
     milestone_parser = subparsers.add_parser("milestone", help="Milestone workflow commands")
     milestone_subparsers = milestone_parser.add_subparsers(dest="milestone_command", required=True)
@@ -188,6 +194,24 @@ def main(argv: list[str] | None = None) -> int:
         print(f"model_digest: {analysis_result['model_digest']}")
         print(f"output: {analysis_result['analysis_dir']}")
         print(f"reused_existing: {analysis_result['reused_existing']}")
+        return 0
+
+    if args.command == "web":
+        try:
+            run_web_server(
+                repository_path=args.repository,
+                host=args.host,
+                port=args.port,
+            )
+        except ValueError as exc:
+            print(f"web failed: {exc}", file=sys.stderr)
+            return 2
+        except ScanError as exc:
+            print(f"web failed: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:
+            print(f"web failed: {exc}", file=sys.stderr)
+            return 1
         return 0
 
     if args.command == "milestone" and args.milestone_command == "status":

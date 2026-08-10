@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Structural Comparisons</h2>
+
+  <form method="post" action="{{ url_for('create_comparison_action') }}" class="stack-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="before_snapshot_id">Before snapshot</label>
+    <select id="before_snapshot_id" name="before_snapshot_id" required>
+      {% for sid in snapshot_ids %}
+        <option value="{{ sid }}">{{ sid }}</option>
+      {% endfor %}
+    </select>
+    <label for="after_snapshot_id">After snapshot</label>
+    <select id="after_snapshot_id" name="after_snapshot_id" required>
+      {% for sid in snapshot_ids %}
+        <option value="{{ sid }}">{{ sid }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit">Compare</button>
+  </form>
+
+  <h3>Known comparisons</h3>
+  <ul>
+    {% for row in comparisons %}
+      <li><a href="{{ url_for('comparisons_page', comparison_id=row.comparison_id) }}">{{ row.comparison_id }}</a> ({{ row.before_snapshot_id }} -> {{ row.after_snapshot_id }})</li>
+    {% else %}
+      <li>none</li>
+    {% endfor %}
+  </ul>
+
+  {% if selected_comparison %}
+    <article class="card">
+      <h3>Comparison {{ selected_comparison.comparison_id }}</h3>
+      <p>Before: {{ selected_comparison.before_snapshot_id }}</p>
+      <p>After: {{ selected_comparison.after_snapshot_id }}</p>
+      <h4>Aggregate Counts</h4>
+      <ul>
+        {% for key, value in selected_comparison.aggregate_counts.items()|sort %}
+          <li>{{ key }}: {{ value }}</li>
+        {% endfor %}
+      </ul>
+    </article>
+  {% endif %}
+
+  <p class="muted">No target Git mutation occurs on comparison routes.</p>
+</section>
+{% endblock %}

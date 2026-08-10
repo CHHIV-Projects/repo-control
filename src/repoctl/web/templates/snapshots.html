@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Snapshots</h2>
+  <form method="post" action="{{ url_for('create_snapshot_action') }}" class="inline-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">Create Snapshot</button>
+  </form>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Snapshot ID</th>
+        <th>Branch</th>
+        <th>HEAD</th>
+        <th>Clean</th>
+        <th>Current State Match</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in snapshots %}
+        <tr>
+          <td>{{ row.snapshot_id }}</td>
+          <td>{{ row.branch }}</td>
+          <td>{{ row.head_commit }}</td>
+          <td>{{ row.working_tree_clean }}</td>
+          <td>{{ row.current_state_match }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5">No snapshots available.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <p class="muted">Snapshot creation writes immutable external evidence only. No target Git mutation occurs.</p>
+</section>
+{% endblock %}

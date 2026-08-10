@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Workflow Visibility</h2>
+  <p>Current workflow state: <strong>{{ workflow_state }}</strong></p>
+  <p class="muted">Browser mutation controls are intentionally unavailable in milestone 009.</p>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Type</th>
+        <th>ID</th>
+        <th>Branch</th>
+        <th>HEAD</th>
+        <th>Count</th>
+        <th>Compatibility</th>
+        <th>Execution</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+        <tr>
+          <td>{{ row.kind }}</td>
+          <td>{{ row.artifact_id }}</td>
+          <td>{{ row.branch }}</td>
+          <td>{{ row.head }}</td>
+          <td>{{ row.count }}</td>
+          <td>{{ row.compatibility }}</td>
+          <td>{{ row.execution_id or 'none' }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="7">No workflow plan/execution artifacts found.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
