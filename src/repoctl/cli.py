@@ -10,6 +10,9 @@ from .context.generator import build_and_publish_context
 from .scanner.core import run_scan, run_scan_with_artifacts
 from .scanner.git_ops import ScanError
 from .snapshot.manager import create_snapshot
+from .workflow.commit_execution import execute_prepared_commit
+from .workflow.commit_plan import prepare_commit
+from .workflow.errors import WorkflowReasonError
 from .workflow.status import WorkflowError, generate_milestone_status
 
 
@@ -40,6 +43,15 @@ def build_parser() -> argparse.ArgumentParser:
     milestone_subparsers = milestone_parser.add_subparsers(dest="milestone_command", required=True)
     milestone_status_parser = milestone_subparsers.add_parser("status", help="Report deterministic read-only Git workflow state")
     milestone_status_parser.add_argument("--repository", help="Path inside target Git repository")
+    milestone_prepare_commit_parser = milestone_subparsers.add_parser(
+        "prepare-commit", help="Prepare immutable staged commit plan"
+    )
+    milestone_prepare_commit_parser.add_argument("--message", required=True, help="Exact commit message")
+    milestone_prepare_commit_parser.add_argument("--repository", help="Path inside target Git repository")
+    milestone_commit_parser = milestone_subparsers.add_parser("commit", help="Execute prepared immutable commit plan")
+    milestone_commit_parser.add_argument("plan_id", help="Prepared immutable commit plan identifier")
+    milestone_commit_parser.add_argument("--approve", action="store_true", help="Explicitly approve exact plan execution")
+    milestone_commit_parser.add_argument("--repository", help="Path inside target Git repository")
 
     return parser
 
@@ -211,6 +223,90 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Matching snapshot: {matching_snapshot}")
         print(f"status_json: {status_result['status_json']}")
         print(f"status_md: {status_result['status_md']}")
+        return 0
+
+    if args.command == "milestone" and args.milestone_command == "prepare-commit":
+        repository_path = args.repository if args.repository else str(Path.cwd())
+        try:
+            result = prepare_commit(repository_path=repository_path, commit_message=args.message)
+        except WorkflowReasonError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        except WorkflowError as exc:
+            print(f"milestone prepare-commit failed: {exc}", file=sys.stderr)
+            return 2
+        except ScanError as exc:
+            print(f"milestone prepare-commit failed: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:
+            print(f"milestone prepare-commit failed: {exc}", file=sys.stderr)
+            return 1
+
+        branch_text = (
+            result["branch"]["name"] if result["branch"]["state"] == "attached" else "(detached)"
+        )
+        print("prepared commit")
+        print(f"Repository: {result['repository_root']}")
+        print(f"Branch: {branch_text}")
+        print(f"HEAD: {result['head_before']}")
+        print("Snapshot:")
+        print(f"{result['matching_snapshot_id']}")
+        print(f"Staged files: {result['staged_record_count']}")
+        for item in result["staged_summary"]:
+            print(f"  {item['status']} {item['path']}")
+        print(f"Unstaged: {result['unstaged_count']}")
+        print(f"Untracked: {result['untracked_count']}")
+        print(f"Conflicts: {result['unmerged_count']}")
+        print(f"Git op: {'active' if result['git_operation_in_progress'] else 'none'}")
+        print("Commit message:")
+        print("")
+        for line in result["commit_message"].splitlines() or [""]:
+            print(f"  {line}")
+        print("")
+        print(f"Plan: {result['plan_id']}")
+        print("NO GIT MUTATION PERFORMED")
+        print("To explicitly approve this exact plan:")
+        print(f"  repoctl milestone commit {result['plan_id']} --approve")
+        print(f"plan_dir: {result['plan_dir']}")
+        print(f"reused_existing: {result['reused_existing']}")
+        return 0
+
+    if args.command == "milestone" and args.milestone_command == "commit":
+        repository_path = args.repository if args.repository else str(Path.cwd())
+        try:
+            result = execute_prepared_commit(
+                repository_path=repository_path,
+                plan_id=args.plan_id,
+                approve=args.approve,
+            )
+        except WorkflowReasonError as exc:
+            print(str(exc), file=sys.stderr)
+            if exc.code == "commit_succeeded_audit_failed" and exc.commit_id:
+                print(f"resulting_commit_id: {exc.commit_id}", file=sys.stderr)
+            if exc.code == "post_commit_verification_failed" and exc.commit_id:
+                print(f"resulting_commit_id: {exc.commit_id}", file=sys.stderr)
+            return 2
+        except WorkflowError as exc:
+            print(f"milestone commit failed: {exc}", file=sys.stderr)
+            return 2
+        except ScanError as exc:
+            print(f"milestone commit failed: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:
+            print(f"milestone commit failed: {exc}", file=sys.stderr)
+            return 1
+
+        print("milestone commit complete")
+        print(f"Repository: {result['repository_root']}")
+        print(f"Plan: {result['plan_id']}")
+        print(f"Execution: {result['execution_id']}")
+        print(f"Branch: {result['branch']}")
+        print(f"HEAD before: {result['head_before']}")
+        print(f"HEAD after: {result['head_after']}")
+        print("Remote refresh: not performed")
+        print("Push performed: false")
+        print(f"execution_dir: {result['execution_dir']}")
+        print(f"reused_existing: {result['reused_existing']}")
         return 0
 
     parser.print_help()

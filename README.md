@@ -23,6 +23,11 @@ Milestone 006 adds deterministic read-only Git workflow intelligence:
 
 repoctl milestone status [--repository <path>]
 
+Milestone 007 adds a guarded local commit foundation with immutable planning and explicit approval:
+
+repoctl milestone prepare-commit --message "<commit message>" [--repository <path>]
+repoctl milestone commit <plan_id> --approve [--repository <path>]
+
 ## Development install
 
 ```bash
@@ -42,6 +47,8 @@ repoctl snapshot --repository /path/to/git/repo
 repoctl compare snap--before snap--after --repository /path/to/git/repo
 repoctl analyze cmp--abcdef0123456789 --repository /path/to/git/repo
 repoctl milestone status --repository /path/to/git/repo
+repoctl milestone prepare-commit --repository /path/to/git/repo --message "Complete Milestone 007"
+repoctl milestone commit commit-plan--abcdef0123456789 --approve --repository /path/to/git/repo
 ```
 
 ## External state location
@@ -104,6 +111,33 @@ with:
 
 Workflow status artifacts are current-state projections and may be replaced by later status runs.
 Milestone 006 performs no Git mutation, no AI analysis, and no snapshot/comparison creation.
+
+Milestone 007 commit plans are written under:
+
+~/.local/share/repoctl/<repository_id>/workflow/commit_plans/<plan_id>/
+
+with:
+
+- plan.json
+- plan.md
+
+Milestone 007 commit execution evidence is written under:
+
+~/.local/share/repoctl/<repository_id>/workflow/commit_executions/<execution_id>/
+
+with:
+
+- execution.json
+- execution.md
+
+Guarded write constraints in Milestone 007:
+
+- `prepare-commit` is read-only toward the target repository.
+- `commit` requires an immutable `plan_id` plus explicit `--approve`.
+- Staged fingerprint and repository state are revalidated immediately before mutation.
+- No fetch, pull, push, merge, rebase, amend, or auto-staging occurs.
+- No AI component authorizes or rewrites commit decisions/messages.
+- Custom hooks environments or executable commit hooks are blocked (`unsupported_git_hooks`).
 
 Milestone 006 `workflow_state` enum values are:
 
