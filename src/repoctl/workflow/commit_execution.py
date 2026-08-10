@@ -175,10 +175,12 @@ def _parse_raw_records(raw: bytes) -> list[bytes]:
     if len(chunks) % 2 != 0:
         raise WorkflowReasonError("post_commit_verification_failed", "invalid post-commit raw diff shape")
 
-    records = []
+    records: list[bytes] = []
     for i in range(0, len(chunks), 2):
         records.append(chunks[i] + b"\t" + chunks[i + 1])
-    records.sort()
+    # Canonical ordering must match prepare-time staged fingerprint semantics.
+    # Sort by path bytes first, then metadata bytes for deterministic tie-breaking.
+    records.sort(key=lambda item: (item.split(b"\t", 1)[1], item.split(b"\t", 1)[0]))
     return records
 
 

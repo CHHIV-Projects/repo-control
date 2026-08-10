@@ -11,6 +11,7 @@ from unittest import mock
 from repoctl.cli import main
 from repoctl.scanner.core import run_scan_with_artifacts
 from repoctl.snapshot.manager import create_snapshot
+from repoctl.workflow import commit_execution as commit_execution_module
 from repoctl.workflow.commit_execution import execute_prepared_commit
 from repoctl.workflow.commit_plan import prepare_commit
 from repoctl.workflow.errors import WorkflowReasonError
@@ -55,6 +56,16 @@ def _prepare_staged_change(repo: Path, state: Path) -> None:
 def _prepare_plan(repo: Path, state: Path, msg: str = "test commit") -> dict:
     _prepare_staged_change(repo, state)
     return prepare_commit(str(repo), msg, state_root=state)
+
+
+def _prepare_multi_file_staged_change(repo: Path, state: Path) -> None:
+    # Use three tracked files so canonical order can diverge from raw-byte lexical order.
+    (repo / "app.py").write_text("def run():\n    return 2\n", encoding="utf-8")
+    (repo / "beta.py").write_text("def beta():\n    return 1\n", encoding="utf-8")
+    (repo / "zeta.py").write_text("def zeta():\n    return 1\n", encoding="utf-8")
+    _git(repo, "add", "app.py", "beta.py", "zeta.py")
+    scan = run_scan_with_artifacts(str(repo), state_root=state)
+    create_snapshot(scan, state_root=state)
 
 
 class WorkflowCommitTests(unittest.TestCase):
@@ -306,6 +317,24 @@ class WorkflowCommitTests(unittest.TestCase):
             self.assertEqual(_git_text(repo, "status", "--short"), "")
             self.assertTrue((Path(result["execution_dir"]) / "execution.json").exists())
 
+    def test_successful_commit_with_multi_file_staged_delta(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            state = root / "state"
+            _prepare_multi_file_staged_change(repo, state)
+
+            plan = prepare_commit(str(repo), "multi file m007", state_root=state)
+            before = _git_text(repo, "rev-parse", "HEAD")
+            result = execute_prepared_commit(str(repo), plan["plan_id"], True, state_root=state)
+            after = _git_text(repo, "rev-parse", "HEAD")
+
+            self.assertNotEqual(before, after)
+            self.assertEqual(result["head_after"], after)
+            self.assertEqual(_git_text(repo, "show", "-s", "--format=%s", "HEAD"), "multi file m007")
+            self.assertEqual(_git_text(repo, "status", "--short"), "")
+            self.assertTrue((Path(result["execution_dir"]) / "execution.json").exists())
+
     def test_commit_failure_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -343,6 +372,31 @@ class WorkflowCommitTests(unittest.TestCase):
                     state_root=state,
                     _test_force_post_verify_failure=True,
                 )
+            self.assertEqual(cm.exception.code, "post_commit_verification_failed")
+            self.assertNotEqual(before, _git_text(repo, "rev-parse", "HEAD"))
+            self.assertIsNotNone(cm.exception.commit_id)
+
+    def test_genuine_post_commit_mismatch_still_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            state = root / "state"
+            plan = _prepare_plan(repo, state, "mismatch check")
+            before = _git_text(repo, "rev-parse", "HEAD")
+
+            real_run_git_bytes = commit_execution_module._run_git_bytes
+
+            def fake_run_git_bytes(repo_root, args):
+                data = real_run_git_bytes(repo_root, args)
+                if args and args[0] == "diff-tree":
+                    # Tamper with the observed post-commit delta to model a genuine mismatch.
+                    return data.replace(b" M\x00app.py\x00", b" M\x00other.py\x00", 1)
+                return data
+
+            with mock.patch("repoctl.workflow.commit_execution._run_git_bytes", side_effect=fake_run_git_bytes):
+                with self.assertRaises(WorkflowReasonError) as cm:
+                    execute_prepared_commit(str(repo), plan["plan_id"], True, state_root=state)
+
             self.assertEqual(cm.exception.code, "post_commit_verification_failed")
             self.assertNotEqual(before, _git_text(repo, "rev-parse", "HEAD"))
             self.assertIsNotNone(cm.exception.commit_id)
