@@ -18,7 +18,7 @@ body {
 }
 
 .site-header, .main, .footer, .nav, .flash-stack {
-  max-width: 1080px;
+  width: min(95vw, 1320px);
   margin: 0 auto;
   padding: 0 1rem;
 }
@@ -38,7 +38,7 @@ body {
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 0.75rem;
-  max-width: 420px;
+  max-width: 620px;
 }
 
 .repo-pill .label { color: var(--muted); font-size: 0.85rem; }
@@ -63,7 +63,7 @@ body {
 }
 
 .main { padding-bottom: 2rem; }
-.panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 1rem; }
+.panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 1rem; overflow-x: auto; }
 .card { background: #fffefb; border: 1px solid var(--line); border-radius: 10px; padding: 0.8rem; }
 .card.error { border-color: #cf9a81; }
 .grid.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 0.8rem; }
@@ -96,6 +96,7 @@ table {
   width: 100%;
   border-collapse: collapse;
   margin-top: 0.8rem;
+  table-layout: auto;
 }
 
 th, td {
@@ -103,6 +104,15 @@ th, td {
   text-align: left;
   padding: 0.45rem;
   vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+ul {
+  overflow-wrap: anywhere;
+}
+
+.main p {
+  max-width: 100ch;
 }
 
 .muted { color: var(--muted); }
