@@ -19,6 +19,10 @@ Milestone 005 adds bounded local AI interpretation over immutable comparison evi
 
 repoctl analyze <comparison_id> [--repository <path>]
 
+Milestone 006 adds deterministic read-only Git workflow intelligence:
+
+repoctl milestone status [--repository <path>]
+
 ## Development install
 
 ```bash
@@ -37,6 +41,7 @@ repoctl context "get_sheet" --repository /path/to/git/repo
 repoctl snapshot --repository /path/to/git/repo
 repoctl compare snap--before snap--after --repository /path/to/git/repo
 repoctl analyze cmp--abcdef0123456789 --repository /path/to/git/repo
+repoctl milestone status --repository /path/to/git/repo
 ```
 
 ## External state location
@@ -87,6 +92,33 @@ Snapshot structural scope remains tracked files; if untracked worktree entries e
 Analysis operates only on an existing immutable comparison, sends bounded structural metadata to local Ollama (`gpt-oss:20b`), and keeps deterministic comparison evidence authoritative.
 AI output is advisory, immutable, external to target repositories, and does not perform Git writes.
 There is no cloud fallback.
+
+Workflow status output is written under:
+
+~/.local/share/repoctl/<repository_id>/workflow/
+
+with:
+
+- status.json
+- status.md
+
+Workflow status artifacts are current-state projections and may be replaced by later status runs.
+Milestone 006 performs no Git mutation, no AI analysis, and no snapshot/comparison creation.
+
+Milestone 006 `workflow_state` enum values are:
+
+- clean
+- staged_only
+- unstaged_only
+- staged_and_unstaged
+- conflicted
+
+Milestone 006 distinguishes staged, unstaged, untracked, and unmerged collections with deterministic path ordering.
+Detached HEAD is represented explicitly as `branch.state = detached` with `branch.name = null`.
+Active Git operations are reported as deterministic names only: merge, rebase, cherry_pick, revert, bisect.
+
+Upstream divergence is local-ref based only. No Git fetch is performed.
+Ahead/behind values describe locally available refs and may be stale versus the remote server.
 
 Context packs are lexical and deterministic (no AI, embeddings, or semantic search), use a fixed seed-plus-one-hop selection strategy, and enforce fixed bounds for seeds, files, symbols, relationships, and test references.
 They are navigation evidence, not source-code authority.

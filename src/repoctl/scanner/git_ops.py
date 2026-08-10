@@ -57,14 +57,20 @@ def list_tracked_files(repo_root: Path) -> list[str]:
     return files
 
 
-def get_working_tree(repo_root: Path) -> dict[str, Any]:
-    output = _run_git_bytes(repo_root, ["status", "--porcelain=v2", "-z", "--untracked-files=all"])
-    chunks = [c for c in output.split(b"\x00") if c]
-
+def _parse_porcelain_v2_chunks(chunks: list[bytes], *, include_headers: bool) -> dict[str, Any]:
+    headers: list[str] = []
     entries: list[dict[str, Any]] = []
     i = 0
     while i < len(chunks):
         chunk = chunks[i]
+
+        if chunk.startswith(b"# "):
+            if not include_headers:
+                text = chunk.decode("utf-8", errors="replace")
+                raise ScanError(f"unsupported porcelain v2 record type: {text}")
+            headers.append(chunk.decode("utf-8", errors="strict"))
+            i += 1
+            continue
 
         if chunk.startswith(b"1 "):
             text = chunk.decode("utf-8", errors="strict")
@@ -149,12 +155,31 @@ def get_working_tree(repo_root: Path) -> dict[str, Any]:
             i += 1
             continue
 
-        record_preview = chunk.decode("utf-8", errors="replace")
-        raise ScanError(f"unsupported porcelain v2 record type: {record_preview}")
+        prefix = chunk[:1].decode("utf-8", errors="replace")
+        raise ScanError(f"unsupported porcelain v2 record type: {prefix}")
 
     entries.sort(key=lambda e: (e["path"].encode(), (e["original_path"] or "").encode()))
+    return {"headers": headers, "entries": entries}
+
+
+def get_working_tree(repo_root: Path) -> dict[str, Any]:
+    output = _run_git_bytes(repo_root, ["status", "--porcelain=v2", "-z", "--untracked-files=all"])
+    chunks = [c for c in output.split(b"\x00") if c]
+    parsed = _parse_porcelain_v2_chunks(chunks, include_headers=False)
 
     return {
-        "is_clean": len(entries) == 0,
-        "entries": entries,
+        "is_clean": len(parsed["entries"]) == 0,
+        "entries": parsed["entries"],
+    }
+
+
+def get_working_tree_with_branch(repo_root: Path) -> dict[str, Any]:
+    output = _run_git_bytes(repo_root, ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"])
+    chunks = [c for c in output.split(b"\x00") if c]
+    parsed = _parse_porcelain_v2_chunks(chunks, include_headers=True)
+
+    return {
+        "is_clean": len(parsed["entries"]) == 0,
+        "headers": parsed["headers"],
+        "entries": parsed["entries"],
     }
