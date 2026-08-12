@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import secrets
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,12 @@ from ..scanner.core import DEFAULT_STATE_ROOT, run_scan_with_artifacts
 from ..scanner.git_ops import ScanError, validate_git_worktree
 from ..scanner.util import make_repository_id
 from ..snapshot.manager import create_snapshot
+from ..workflow.errors import WorkflowReasonError
 from ..workflow.git_state import inspect_git_state
+from ..workflow.stage_execution import execute_prepared_stage
+from ..workflow.stage_plan import prepare_stage
+from ..workflow.commit_execution import execute_prepared_commit
+from ..workflow.commit_plan import prepare_commit
 from ..workflow.status import WorkflowError, generate_milestone_status
 from .views import (
     comparison_id_choices,
@@ -148,6 +154,15 @@ def create_web_app(
             error_message=err.safe_message,
             mutation_note="NO TARGET GIT MUTATION",
         ), err.status_code
+
+    @app.errorhandler(WorkflowReasonError)
+    def _handle_workflow_reason_error(err: WorkflowReasonError):
+        return render_template(
+            "error.html",
+            error_code=err.code,
+            error_message=err.safe_message,
+            mutation_note="NO TARGET GIT MUTATION",
+        ), 400
 
     @app.errorhandler(ScanError)
     @app.errorhandler(WorkflowError)
@@ -380,8 +395,7 @@ def create_web_app(
     @app.get("/workflow")
     def workflow_page():
         status_json_path, wf_root = status_paths()
-        if not status_json_path.exists():
-            generate_milestone_status(str(repo_root), state_root=effective_state_root)
+        generate_milestone_status(str(repo_root), state_root=effective_state_root)
         status_payload = _read_status(status_json_path)
         git_state = inspect_git_state(str(repo_root))
         workflow_rows = summarize_workflow_artifacts(wf_root, git_state)
@@ -390,6 +404,93 @@ def create_web_app(
             workflow_state=status_payload["workflow_state"],
             rows=workflow_rows,
         )
+
+    @app.post("/workflow/stage/prepare")
+    def workflow_prepare_stage_action():
+        _require_csrf()
+        result = prepare_stage(str(repo_root), include_all=True, state_root=effective_state_root)
+        flash("Stage plan prepared.", "success")
+        return redirect(url_for("workflow_stage_review_page", plan_id=result["plan_id"]))
+
+    @app.get("/workflow/stage/plan")
+    def workflow_stage_review_page():
+        plan_id = request.args.get("plan_id", "")
+        if not plan_id:
+            raise WebUIError("invalid_input", "Stage plan ID is required.", status_code=400)
+        plan_root = effective_state_root / repo_id / "workflow" / "stage_plans" / plan_id
+        if not plan_root.exists():
+            raise WebUIError("stage_plan_not_found", "Stage plan was not found.", status_code=404)
+        plan = json.loads((plan_root / "plan.json").read_text(encoding="utf-8"))
+        branch = plan["branch"]["name"] if plan["branch"]["state"] == "attached" else "(detached)"
+        summary = {
+            "action": "Stage",
+            "repository": plan["repository_root"],
+            "branch": branch,
+            "head_short": plan["head"][:7],
+            "head_full": plan["head"],
+            "candidate_count": int(plan.get("candidate_record_count", 0)),
+            "candidate_paths": [item["path"] for item in plan.get("candidate_records", [])],
+            "candidate_classifications": {
+                item["path"]: item.get("classification", "unknown")
+                for item in plan.get("candidate_records", [])
+            },
+            "plan_id": plan_id,
+            "compatibility": "Current read-only compatibility is informational and not authoritative.",
+        }
+        return render_template("workflow_plan_review.html", mode="stage", plan=summary)
+
+    @app.post("/workflow/stage/approve")
+    def workflow_stage_approve_action():
+        _require_csrf()
+        plan_id = request.form.get("plan_id", "")
+        if not plan_id:
+            raise WebUIError("invalid_input", "Stage plan ID is required.", status_code=400)
+        result = execute_prepared_stage(str(repo_root), plan_id, approve=True, state_root=effective_state_root)
+        flash(f"Stage execution succeeded for plan {plan_id}.", "success")
+        return redirect(url_for("workflow_page"))
+
+    @app.post("/workflow/commit/prepare")
+    def workflow_prepare_commit_action():
+        _require_csrf()
+        message = request.form.get("commit_message", "").strip()
+        if not message:
+            raise WebUIError("invalid_input", "Commit message is required.", status_code=400)
+        result = prepare_commit(str(repo_root), message, state_root=effective_state_root)
+        flash("Commit plan prepared.", "success")
+        return redirect(url_for("workflow_commit_review_page", plan_id=result["plan_id"]))
+
+    @app.get("/workflow/commit/plan")
+    def workflow_commit_review_page():
+        plan_id = request.args.get("plan_id", "")
+        if not plan_id:
+            raise WebUIError("invalid_input", "Commit plan ID is required.", status_code=400)
+        plan_root = effective_state_root / repo_id / "workflow" / "commit_plans" / plan_id
+        if not plan_root.exists():
+            raise WebUIError("commit_plan_not_found", "Commit plan was not found.", status_code=404)
+        plan = json.loads((plan_root / "plan.json").read_text(encoding="utf-8"))
+        branch = plan["branch"]["name"] if plan["branch"]["state"] == "attached" else "(detached)"
+        summary = {
+            "action": "Commit",
+            "repository": plan["repository_root"],
+            "branch": branch,
+            "head_short": plan["head_before"][:7],
+            "head_full": plan["head_before"],
+            "commit_message": plan.get("commit_message", "(not available)"),
+            "staged_summary": plan.get("staged_summary", []),
+            "matching_snapshot_id": plan.get("matching_snapshot_id", "(no snapshot)"),
+            "plan_id": plan_id,
+        }
+        return render_template("workflow_plan_review.html", mode="commit", plan=summary)
+
+    @app.post("/workflow/commit/approve")
+    def workflow_commit_approve_action():
+        _require_csrf()
+        plan_id = request.form.get("plan_id", "")
+        if not plan_id:
+            raise WebUIError("invalid_input", "Commit plan ID is required.", status_code=400)
+        result = execute_prepared_commit(str(repo_root), plan_id, approve=True, state_root=effective_state_root)
+        flash(f"Commit execution succeeded for plan {plan_id}.", "success")
+        return redirect(url_for("workflow_page"))
 
     return app
 

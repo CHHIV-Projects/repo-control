@@ -3,8 +3,29 @@
 <section class="panel">
   <h2>Workflow Visibility</h2>
   <p>Current workflow state: <strong>{{ workflow_state }}</strong></p>
-  <p class="muted">Browser mutation controls are intentionally unavailable in milestone 009.</p>
   <p class="muted">Workflow history - newest to oldest.</p>
+
+  <div class="grid two spaced-top">
+    {% if workflow_state in ['unstaged_only', 'staged_and_unstaged'] %}
+      <form method="post" action="{{ url_for('workflow_prepare_stage_action') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="primary">Prepare Stage</button>
+      </form>
+    {% else %}
+      <div class="muted">Prepare Stage is not available for the current workflow state: {{ workflow_state }}</div>
+    {% endif %}
+
+    {% if workflow_state == 'staged_only' %}
+      <form method="post" action="{{ url_for('workflow_prepare_commit_action') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label for="commit_message">Commit message</label>
+        <input id="commit_message" name="commit_message" type="text" required placeholder="Describe the staged change">
+        <button type="submit" class="primary">Prepare Commit</button>
+      </form>
+    {% else %}
+      <div class="muted">Prepare Commit is not available for the current workflow state: {{ workflow_state }}</div>
+    {% endif %}
+  </div>
 
   <details class="spaced-top">
     <summary>Stage vs Commit help</summary>
