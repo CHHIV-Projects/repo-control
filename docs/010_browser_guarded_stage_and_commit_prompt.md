@@ -1381,3 +1381,334 @@ Milestone 010 is complete only when:
 - Repo Control full regression passes;
 
 - Photo Organizer remains untouched.
+
+M010 clarification decisions confirmed.
+
+The coder’s architectural reading is correct: M010 is a browser adaptation of the existing M008/M007 authorities, not a redesign of Git workflow safety.
+
+Use the following locked browser interaction contract.
+
+1. FLOW OWNER
+
+The Workflow page owns the guided Stage → Snapshot → Commit lifecycle.
+
+Use route-level actions and read-only plan review views.
+
+Preferred interaction:
+
+    Workflow
+        ↓
+    POST Prepare Stage
+        ↓
+    redirect to Stage Plan Review
+        ↓
+    POST Approve Stage
+        ↓
+    redirect to execution result / Workflow state
+        ↓
+    user creates matching Snapshot through existing Snapshot UI
+        ↓
+    Workflow
+        ↓
+    enter commit message + POST Prepare Commit
+        ↓
+    redirect to Commit Plan Review
+        ↓
+    POST Approve Commit
+        ↓
+    redirect to execution result / Workflow state
+
+Do not use a modal as the primary plan-review surface.
+
+A dedicated read-only review view is preferred because the immutable plan should be clearly inspectable before mutation and normal POST/Redirect/GET behavior should remain explicit.
+
+Exact route naming is an implementation detail and may follow current Flask conventions.
+
+2. GENERIC REPOSITORY BEHAVIOR
+
+The feature must work for any repository safely bound to the running Repo Control browser instance.
+
+Do not special-case Vocab App in production implementation.
+
+Testing boundary:
+
+    automated mutation tests:
+        isolated disposable temporary repositories
+
+    live Product Owner acceptance:
+        Vocab App fixture only
+
+The Vocab fixture is the milestone safety harness, not application-specific behavior.
+
+3. IMMUTABLE PLAN REVIEW CONTENT
+
+The browser review page should present a human-readable projection of the existing immutable core plan.
+
+For Stage, show existing facts such as:
+
+    action
+    repository
+    branch
+    starting HEAD
+    candidate count
+    exact candidate paths
+    change classifications
+    exact immutable Stage Plan ID
+    compatibility/current-state information if already available safely
+
+For Commit, show existing facts such as:
+
+    action
+    repository
+    branch
+    starting HEAD
+    commit message
+    staged scope/count
+    matching snapshot
+    exact immutable Commit Plan ID
+
+Machine fingerprints/object IDs/modes may be secondary audit detail.
+
+Do NOT add a new browser review timestamp or other metadata merely for presentation unless that fact already exists authoritatively in the plan artifact.
+
+The underlying immutable plan artifact remains authoritative.
+
+The browser summary is not a new approval object.
+
+4. PLAN ID FLOW
+
+The plan ID returned by the existing prepare service is the exact identity carried into the review page and approval POST.
+
+Approval must bind that exact immutable ID.
+
+The user must not be able to:
+
+    type a replacement plan ID
+    select a different plan during approval
+    approve “latest”
+    approve an implicitly regenerated plan
+
+Conceptually:
+
+    prepare service
+        → returns exact plan_id
+        → review exact plan_id
+        → approval POST carries exact plan_id
+        → core execution reloads and revalidates exact plan_id
+
+The browser must never substitute a newer plan automatically if the reviewed plan becomes stale.
+
+5. APPROVAL UX
+
+Use one explicit approval action per immutable plan.
+
+Stage:
+
+    Approve Stage
+
+Commit:
+
+    Approve Commit
+
+Do not add an additional browser-created confirmation model or multi-step approval ceremony.
+
+The security contract remains:
+
+    exact plan ID
+    +
+    explicit user approval
+    +
+    CSRF-protected POST
+    +
+    existing core revalidation
+
+The approval button should exist on the corresponding plan-review view so the user is approving the plan they are currently looking at.
+
+6. PREPARE AND APPROVE MUST REMAIN SEPARATE
+
+Do not combine:
+
+    Prepare + Stage
+
+or:
+
+    Prepare + Commit
+
+into one browser operation.
+
+Preparation remains non-mutating.
+
+The user must see the resulting immutable plan before the separate mutation approval is available.
+
+7. CORE SERVICE AUTHORITY
+
+Add this wording as a locked M010 rule:
+
+    The browser may render plan/execution state and collect approval
+    intent, but all mutation authority remains in the existing M008/M007
+    core services.
+
+    The browser must not reimplement eligibility checks, candidate
+    enumeration, snapshot validation, fingerprint logic, stale-plan
+    detection, Git-operation checks, execution verification, or
+    post-mutation verification.
+
+No browser-side branch/HEAD/staged-state/fingerprint logic may become an independent authority.
+
+Display-only derivation is acceptable where already supported by existing deterministic facts.
+
+8. FAILURE PRESENTATION
+
+Existing core WorkflowReasonError reason codes remain authoritative.
+
+The browser adapter may translate them into readable explanatory text, but must also retain/display the stable reason code.
+
+Example:
+
+    Stage blocked
+
+    Repository state changed after this Stage Plan was prepared.
+    Review the current repository state and prepare a new plan.
+
+    Reason:
+        worktree_state_changed
+
+Do not catch a fail-closed error and automatically repair, regenerate, retry, restage, or recommit.
+
+9. STALE PLAN UX
+
+A review page may display compatibility/current-state information if that information can be safely obtained using existing read-only services.
+
+However:
+
+    browser compatibility display is informational
+    core execution-time revalidation is authoritative
+
+Even if the browser thinks a plan appears compatible, M008/M007 must revalidate immediately before mutation.
+
+If execution reports stale:
+
+    show the failure
+    preserve repository state
+    require the user to return and explicitly prepare a new plan
+
+10. EXECUTION EVIDENCE / AUDIT TRAIL
+
+The existing external M008/M007 execution artifacts remain the source of truth.
+
+Do NOT introduce:
+
+    browser-only audit records
+    duplicate plan records
+    duplicate execution records
+    separate approval persistence model
+
+The browser should render summaries of the existing plan/execution artifacts in the Workflow UI.
+
+Plan and execution identities remain distinct immutable evidence objects even when visually paired.
+
+11. SNAPSHOT BOUNDARY
+
+Keep the M007 matching-snapshot requirement exactly as designed.
+
+After Stage succeeds:
+
+    show that the repository is staged_only
+    explain that Commit preparation requires an exact matching Snapshot
+    provide navigation to the existing Snapshot page
+
+Do NOT automatically create the snapshot in M010.
+
+After the user creates the matching snapshot, they return to Workflow and prepare Commit.
+
+12. LIVE VOCAB APPROVAL
+
+The coder may implement and fully validate M010 using disposable repositories.
+
+The coder must STOP before performing the real Vocab mutation.
+
+The Product Owner will personally perform:
+
+    Prepare Stage
+    Review Stage Plan
+    Approve Stage
+    create matching Snapshot
+    Prepare Commit
+    Review Commit Plan
+    Approve Commit
+
+against the preserved:
+
+    M vocab_utils.py
+
+Vocab fixture.
+
+No push.
+
+13. AUDIT-FAILURE CONDITIONS
+
+Preserve the existing special conditions exactly.
+
+If:
+
+    stage_succeeded_audit_failed
+
+then staging already happened.
+
+Do not retry or unstage.
+
+If:
+
+    commit_succeeded_audit_failed
+
+then the Git commit already happened.
+
+Do not retry, amend, revert, or reset.
+
+The browser must make these conditions visually unmistakable.
+
+14. NO NEW MODEL
+
+The existing artifact store is authoritative.
+
+M010 introduces no new persistent:
+
+    browser audit model
+    approval record model
+    task model
+    lineage model
+    milestone model
+
+A browser approval is an invocation of the existing execution authority against an existing exact immutable plan.
+
+15. IMPLEMENTATION DIRECTION
+
+Your recommended implementation direction is approved:
+
+    route-level POST actions
+    +
+    dedicated read-only plan review views
+    +
+    thin adapters over existing core services
+
+Proceed with the Gate C targeted architecture confirmation first.
+
+If that inspection shows this contract can be implemented without modifying fundamental M008/M007 authority:
+
+    proceed with implementation.
+
+If a core authority redesign appears necessary:
+
+    STOP AND REPORT.
+
+STATUS:
+
+    M010 CLARIFICATIONS CONFIRMED
+    WORKFLOW PAGE OWNS GUIDED FLOW
+    DEDICATED READ-ONLY PLAN REVIEW
+    EXACT PLAN-ID APPROVAL
+    SINGLE EXPLICIT APPROVAL PER PLAN
+    CORE ARTIFACT STORE REMAINS AUTHORITATIVE
+    GENERIC BOUND-REPOSITORY FEATURE
+    VOCAB IS LIVE ACCEPTANCE FIXTURE ONLY
+    NO M008/M007 SAFETY REDESIGN AUTHORIZED
