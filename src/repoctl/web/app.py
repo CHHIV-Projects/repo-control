@@ -193,11 +193,18 @@ def create_web_app(
         if selected_context_id:
             if selected_context_id not in context_ids:
                 raise WebUIError("context_not_found", "Context result was not found.", status_code=404)
-            context_view = load_context_view(load_context_payload(contexts_root(), selected_context_id))
+            current_git_state = inspect_git_state(str(repo_root))
+            context_view = load_context_view(
+                load_context_payload(contexts_root(), selected_context_id),
+                current_git_state,
+                repo_id,
+                repo_root,
+            )
 
         return render_template(
             "context.html",
             context_ids=context_ids,
+            selected_context_id=selected_context_id,
             context_view=context_view,
             match_label=match_label,
             file_reason=file_reason,
@@ -216,41 +223,98 @@ def create_web_app(
 
     @app.get("/snapshots")
     def snapshots_page():
+        selected_snapshot_id = request.args.get("snapshot_id")
         status_json_path, _ = status_paths()
-        if not status_json_path.exists():
-            generate_milestone_status(str(repo_root), state_root=effective_state_root)
+        # Keep current-match cue aligned with the repository's current state.
+        generate_milestone_status(str(repo_root), state_root=effective_state_root)
         status_payload = _read_status(status_json_path)
         rows = list_snapshots(
             snapshots_root(),
             repo_id,
             status_payload["current_snapshot_id_candidate"],
         )
-        return render_template("snapshots.html", snapshots=rows)
+        selected_snapshot = next((row for row in rows if row.snapshot_id == selected_snapshot_id), None)
+        return render_template(
+            "snapshots.html",
+            snapshots=rows,
+            selected_snapshot_id=selected_snapshot_id,
+            selected_snapshot=selected_snapshot,
+        )
 
     @app.post("/snapshots/create")
     def create_snapshot_action():
         _require_csrf()
         scan_result = run_scan_with_artifacts(str(repo_root), state_root=effective_state_root)
         result = create_snapshot(scan_result=scan_result, state_root=effective_state_root)
-        flash("Snapshot created.", "success")
+        if result["reused_existing"]:
+            flash("Snapshot already exists for this exact repository state; reused existing snapshot.", "success")
+        else:
+            flash("Snapshot captured.", "success")
         return redirect(url_for("snapshots_page", snapshot_id=result["snapshot_id"]))
 
     @app.get("/comparisons")
     def comparisons_page():
         selected_comparison_id = request.args.get("comparison_id")
-        ids = snapshot_id_choices(snapshots_root())
+        selected_before_snapshot_id = request.args.get("before_snapshot_id")
+        selected_after_snapshot_id = request.args.get("after_snapshot_id")
+
+        status_json_path, _ = status_paths()
+        generate_milestone_status(str(repo_root), state_root=effective_state_root)
+        status_payload = _read_status(status_json_path)
+
+        snapshot_rows = list_snapshots(
+            snapshots_root(),
+            repo_id,
+            status_payload["current_snapshot_id_candidate"],
+        )
+        snapshots_by_id = {row.snapshot_id: row for row in snapshot_rows}
         comparisons = list_comparisons(comparisons_root(), repo_id)
+        comparisons_by_id = {row.comparison_id: row for row in comparisons}
         selected_payload = None
         if selected_comparison_id:
             allowed_ids = {row.comparison_id for row in comparisons}
             if selected_comparison_id not in allowed_ids:
                 raise WebUIError("comparison_not_found", "Comparison result was not found.", status_code=404)
             selected_payload = load_comparison_payload(comparisons_root(), selected_comparison_id)
+
+        if selected_payload is not None:
+            if not selected_before_snapshot_id:
+                selected_before_snapshot_id = selected_payload.get("before_snapshot_id")
+            if not selected_after_snapshot_id:
+                selected_after_snapshot_id = selected_payload.get("after_snapshot_id")
+
+        if snapshot_rows:
+            if selected_before_snapshot_id not in snapshots_by_id:
+                selected_before_snapshot_id = snapshot_rows[0].snapshot_id
+            if selected_after_snapshot_id not in snapshots_by_id:
+                selected_after_snapshot_id = snapshot_rows[0].snapshot_id
+
+        selected_before_snapshot = snapshots_by_id.get(selected_before_snapshot_id or "")
+        selected_after_snapshot = snapshots_by_id.get(selected_after_snapshot_id or "")
+
+        selected_comparison_summary = None
+        if selected_comparison_id:
+            selected_comparison_summary = comparisons_by_id.get(selected_comparison_id)
+
+        selectors_match_selected_comparison = True
+        if selected_payload is not None:
+            selectors_match_selected_comparison = (
+                selected_before_snapshot_id == selected_payload.get("before_snapshot_id")
+                and selected_after_snapshot_id == selected_payload.get("after_snapshot_id")
+            )
+
         return render_template(
             "comparisons.html",
-            snapshot_ids=ids,
+            snapshot_options=snapshot_rows,
             comparisons=comparisons,
             selected_comparison=selected_payload,
+            selected_comparison_id=selected_comparison_id,
+            selected_comparison_summary=selected_comparison_summary,
+            selected_before_snapshot_id=selected_before_snapshot_id,
+            selected_after_snapshot_id=selected_after_snapshot_id,
+            selected_before_snapshot=selected_before_snapshot,
+            selected_after_snapshot=selected_after_snapshot,
+            selectors_match_selected_comparison=selectors_match_selected_comparison,
         )
 
     @app.post("/comparisons/create")
@@ -262,8 +326,18 @@ def create_web_app(
         if before_snapshot_id not in valid_snapshot_ids or after_snapshot_id not in valid_snapshot_ids:
             raise WebUIError("invalid_input", "Snapshot selection must reference known snapshot IDs.")
         result = compare_snapshots(before_snapshot_id, after_snapshot_id, str(repo_root), state_root=effective_state_root)
-        flash("Structural comparison created.", "success")
-        return redirect(url_for("comparisons_page", comparison_id=result["comparison_id"]))
+        if result["reused_existing"]:
+            flash("Comparison already exists for this exact before/after snapshot pair; reused existing comparison.", "success")
+        else:
+            flash("Comparison created.", "success")
+        return redirect(
+            url_for(
+                "comparisons_page",
+                comparison_id=result["comparison_id"],
+                before_snapshot_id=before_snapshot_id,
+                after_snapshot_id=after_snapshot_id,
+            )
+        )
 
     @app.get("/analysis")
     def analysis_page():

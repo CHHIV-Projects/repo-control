@@ -14,7 +14,7 @@
       <label for="context_id">Existing context</label>
       <select id="context_id" name="context_id">
         {% for cid in context_ids %}
-          <option value="{{ cid }}">{{ cid }}</option>
+          <option value="{{ cid }}"{% if selected_context_id == cid %} selected{% endif %}>{{ cid }}</option>
         {% endfor %}
       </select>
       <button type="submit">View</button>
@@ -23,9 +23,21 @@
 
   {% if context_view %}
     <article class="card spaced-top">
-      <h3>Context {{ context_view.context_id }}</h3>
+      <h3>Context for "{{ context_view.query }}"</h3>
+      <p><strong>{{ context_view.freshness_status }}</strong> | {{ context_view.freshness_detail }}</p>
       <p>Status: {{ match_label(context_view.match_status) }} | Seeds: {{ context_view.seed_count }}</p>
-      <p class="muted">Query: {{ context_view.query }} | Canonical: {{ context_view.canonical_query }}</p>
+      <dl>
+        <dt>Repository</dt><dd>{{ context_view.repository_root }}</dd>
+        <dt>Branch at generation</dt><dd>{{ context_view.branch }}</dd>
+        <dt>HEAD at generation</dt><dd><strong>{{ context_view.head_short }}</strong> <span class="muted">({{ context_view.head_commit }})</span></dd>
+        <dt>Working-tree origin</dt><dd>{{ context_view.working_tree_origin }}</dd>
+        <dt>Canonical query</dt><dd>{{ context_view.canonical_query }}</dd>
+        <dt>Context ID</dt>
+        <dd class="muted">
+          {{ context_view.context_id }}
+          <div>Identifies this saved query slot. Regenerating the same query can update its stored repository-state payload.</div>
+        </dd>
+      </dl>
 
       <h4>Relevant Files</h4>
       <ul>
@@ -46,6 +58,7 @@
       </ul>
 
       <h4>Direct Relationships</h4>
+      <p class="muted">Direct Relationships summarize structural links in repository code, including test-reference edges.</p>
       <ul>
         {% for row in context_view.relationships %}
           <li>{{ row.relationship_type }} | {{ row.source_file }} -> {{ row.target_file }} ({{ relation_reason(row) }})</li>
@@ -55,9 +68,25 @@
       </ul>
 
       <h4>Related Tests</h4>
+      <p class="muted">Related Tests groups deterministic test-reference evidence by logical test-target identity. Expand details to inspect distinct evidence records.</p>
       <ul>
-        {% for row in context_view.tests %}
-          <li>{{ row.test_info.test_file }} :: {{ row.test_info.test_name }} -> {{ row.target_file }}::{{ row.target_symbol }}</li>
+        {% for row in context_view.grouped_tests %}
+          <li>
+            <strong>{{ row.test_name }}</strong>
+            <div>Target: {{ row.target_file }}::{{ row.target_symbol }}</div>
+            <div class="muted">Test file: {{ row.test_file }} | Evidence references: {{ row.evidence_count }}</div>
+            <details>
+              <summary>Details ({{ row.evidence_count }})</summary>
+              <ul>
+                {% for detail in row.details %}
+                  <li>
+                    kind={{ detail.reference_kind }} | line={{ detail.source_line if detail.source_line is not none else 'unknown' }}
+                    | class={{ detail.test_class }} | target_kind={{ detail.target_symbol_kind }}
+                  </li>
+                {% endfor %}
+              </ul>
+            </details>
+          </li>
         {% else %}
           <li>none</li>
         {% endfor %}

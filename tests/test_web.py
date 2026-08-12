@@ -3,6 +3,8 @@ from __future__ import annotations
 import subprocess
 import tempfile
 import unittest
+import re
+import os
 from pathlib import Path
 from unittest import mock
 
@@ -12,6 +14,10 @@ from repoctl.compare.manager import compare_snapshots
 from repoctl.scanner.core import run_scan_with_artifacts
 from repoctl.snapshot.manager import create_snapshot
 from repoctl.web.app import create_web_app
+from repoctl.workflow.commit_execution import execute_prepared_commit
+from repoctl.workflow.commit_plan import prepare_commit
+from repoctl.workflow.stage_execution import execute_prepared_stage
+from repoctl.workflow.stage_plan import prepare_stage
 
 
 def _git(repo: Path, *args: str) -> bytes:
@@ -97,6 +103,7 @@ class WebTests(unittest.TestCase):
             self.assertEqual(resp.status_code, 200)
             self.assertIn("Repository Dashboard", text)
             self.assertIn("clean", text)
+            self.assertIn("initial", text)
             self.assertIn("No remote refresh was performed.", text)
 
     def test_dashboard_renders_unstaged_state(self) -> None:
@@ -151,6 +158,90 @@ class WebTests(unittest.TestCase):
             self.assertEqual(before_head, _git_text(repo, "rev-parse", "HEAD"))
             self.assertEqual(before_status, _git_status_porcelain(repo))
 
+    def test_context_shows_current_then_stale_when_worktree_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            app = create_web_app(repository_path=str(repo), state_root=root / "state")
+            client = app.test_client()
+
+            client.get("/context")
+            csrf = _extract_csrf_token(client)
+            generated = client.post(
+                "/context/generate",
+                data={"csrf_token": csrf, "query": "helper"},
+                follow_redirects=True,
+            )
+            self.assertEqual(generated.status_code, 200)
+            self.assertIn("CURRENT", generated.get_data(as_text=True))
+
+            repo_id = app.config["REPO_ID"]
+            contexts_root = (root / "state" / repo_id / "contexts")
+            context_ids = sorted([child.name for child in contexts_root.iterdir() if child.is_dir()])
+            context_id = context_ids[-1]
+
+            (repo / "app.py").write_text("def run():\n    return 5\n", encoding="utf-8")
+            stale = client.get(f"/context?context_id={context_id}")
+            stale_text = stale.get_data(as_text=True)
+            self.assertEqual(stale.status_code, 200)
+            self.assertIn("STALE", stale_text)
+            self.assertIn("Working-tree state differs", stale_text)
+
+    def test_context_groups_related_test_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            app = create_web_app(repository_path=str(repo), state_root=root / "state")
+            client = app.test_client()
+
+            client.get("/context")
+            csrf = _extract_csrf_token(client)
+            resp = client.post(
+                "/context/generate",
+                data={"csrf_token": csrf, "query": "helper"},
+                follow_redirects=True,
+            )
+            text = resp.get_data(as_text=True)
+            self.assertEqual(resp.status_code, 200)
+            self.assertIn("Related Tests groups deterministic test-reference evidence", text)
+            self.assertIn("Evidence references:", text)
+            self.assertIn("Details (", text)
+
+    def test_context_selector_retains_non_first_selection_after_view(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            app = create_web_app(repository_path=str(repo), state_root=root / "state")
+            client = app.test_client()
+
+            client.get("/context")
+            csrf = _extract_csrf_token(client)
+            first = client.post(
+                "/context/generate",
+                data={"csrf_token": csrf, "query": "helper"},
+                follow_redirects=True,
+            )
+            self.assertEqual(first.status_code, 200)
+
+            second = client.post(
+                "/context/generate",
+                data={"csrf_token": csrf, "query": "module_b"},
+                follow_redirects=True,
+            )
+            self.assertEqual(second.status_code, 200)
+
+            repo_id = app.config["REPO_ID"]
+            contexts_root = root / "state" / repo_id / "contexts"
+            context_ids = sorted([child.name for child in contexts_root.iterdir() if child.is_dir()])
+            self.assertGreaterEqual(len(context_ids), 2)
+            selected_context_id = context_ids[1]
+
+            viewed = client.get(f"/context?context_id={selected_context_id}")
+            self.assertEqual(viewed.status_code, 200)
+            text = viewed.get_data(as_text=True)
+            expected_pattern = rf'<option value="{re.escape(selected_context_id)}" selected>{re.escape(selected_context_id)}</option>'
+            self.assertRegex(text, expected_pattern)
+
     def test_snapshot_create_requires_csrf(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -184,6 +275,68 @@ class WebTests(unittest.TestCase):
             snapshot_ids = sorted([child.name for child in snapshots_root.iterdir() if child.is_dir()])
             self.assertEqual(len(snapshot_ids), 1)
 
+    def test_snapshots_post_create_feedback_and_selected_row(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            state_root = root / "state"
+            app = create_web_app(repository_path=str(repo), state_root=state_root)
+            client = app.test_client()
+
+            client.get("/snapshots")
+            csrf = _extract_csrf_token(client)
+            resp = client.post("/snapshots/create", data={"csrf_token": csrf}, follow_redirects=True)
+            text = resp.get_data(as_text=True)
+            self.assertEqual(resp.status_code, 200)
+            self.assertIn("Snapshot captured", text)
+
+            repo_id = app.config["REPO_ID"]
+            snapshots_root = state_root / repo_id / "snapshots"
+            snapshot_ids = sorted([child.name for child in snapshots_root.iterdir() if child.is_dir()])
+            self.assertEqual(len(snapshot_ids), 1)
+            snapshot_id = snapshot_ids[0]
+            self.assertIn(f"Snapshot ID: {snapshot_id}", text)
+            self.assertIn(f'<tr class="row-selected">', text)
+
+    def test_snapshots_page_orders_newest_first_by_filesystem_mtime(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            state_root = root / "state"
+            app = create_web_app(repository_path=str(repo), state_root=state_root)
+            client = app.test_client()
+
+            client.get("/snapshots")
+            csrf = _extract_csrf_token(client)
+
+            first = client.post("/snapshots/create", data={"csrf_token": csrf}, follow_redirects=True)
+            self.assertEqual(first.status_code, 200)
+
+            (repo / "module_b.py").write_text("def helper():\n    return 2\n", encoding="utf-8")
+            second = client.post("/snapshots/create", data={"csrf_token": csrf}, follow_redirects=True)
+            self.assertEqual(second.status_code, 200)
+
+            repo_id = app.config["REPO_ID"]
+            snapshots_root = state_root / repo_id / "snapshots"
+            ids = [child.name for child in snapshots_root.iterdir() if child.is_dir()]
+            self.assertEqual(len(ids), 2)
+
+            for idx, snapshot_id in enumerate(sorted(ids)):
+                dir_path = snapshots_root / snapshot_id
+                os.utime(dir_path, (1000 + idx, 1000 + idx))
+
+            newest_id = sorted(ids)[-1]
+            oldest_id = sorted(ids)[0]
+
+            resp = client.get("/snapshots")
+            self.assertEqual(resp.status_code, 200)
+            text = resp.get_data(as_text=True)
+            newest_pos = text.find(f"Snapshot ID: {newest_id}")
+            oldest_pos = text.find(f"Snapshot ID: {oldest_id}")
+            self.assertNotEqual(newest_pos, -1)
+            self.assertNotEqual(oldest_pos, -1)
+            self.assertLess(newest_pos, oldest_pos)
+
     def test_comparison_known_snapshot_and_unknown_snapshot_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -210,7 +363,23 @@ class WebTests(unittest.TestCase):
                 follow_redirects=True,
             )
             self.assertEqual(good.status_code, 200)
-            self.assertIn("Aggregate Counts", good.get_data(as_text=True))
+            good_text = good.get_data(as_text=True)
+            self.assertIn("Viewing Saved Comparison", good_text)
+            self.assertIn("Before Preview", good_text)
+            self.assertIn("After Preview", good_text)
+            self.assertIn("Captured artifact time (UTC)", good_text)
+            self.assertIn(f"Snapshot ID: {before['snapshot_id']}", good_text)
+            self.assertIn(f"Snapshot ID: {after['snapshot_id']}", good_text)
+            self.assertIn(
+                f'<option value="{before["snapshot_id"]}" selected>',
+                good_text,
+            )
+            self.assertIn(
+                f'<option value="{after["snapshot_id"]}" selected>',
+                good_text,
+            )
+            self.assertIn("files: added=", good_text)
+            self.assertIn("symbols: added=", good_text)
 
             bad = client.post(
                 "/comparisons/create",
@@ -222,6 +391,63 @@ class WebTests(unittest.TestCase):
             )
             self.assertEqual(bad.status_code, 400)
             self.assertIn("known snapshot IDs", bad.get_data(as_text=True))
+
+    def test_known_comparisons_order_newest_first_by_filesystem_mtime(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            state_root = root / "state"
+            app = create_web_app(repository_path=str(repo), state_root=state_root)
+            client = app.test_client()
+
+            snap_a = create_snapshot(run_scan_with_artifacts(str(repo), state_root=state_root), state_root=state_root)
+
+            (repo / "module_b.py").write_text("def helper():\n    return 2\n", encoding="utf-8")
+            _git(repo, "add", "module_b.py")
+            _git(repo, "commit", "-m", "change one")
+            snap_b = create_snapshot(run_scan_with_artifacts(str(repo), state_root=state_root), state_root=state_root)
+
+            (repo / "module_a.py").write_text("from module_b import helper\n\n\ndef run():\n    return helper() + 1\n", encoding="utf-8")
+            _git(repo, "add", "module_a.py")
+            _git(repo, "commit", "-m", "change two")
+            snap_c = create_snapshot(run_scan_with_artifacts(str(repo), state_root=state_root), state_root=state_root)
+
+            cmp_one = compare_snapshots(snap_a["snapshot_id"], snap_b["snapshot_id"], str(repo), state_root=state_root)
+            cmp_two = compare_snapshots(snap_b["snapshot_id"], snap_c["snapshot_id"], str(repo), state_root=state_root)
+
+            repo_id = app.config["REPO_ID"]
+            comparisons_root = state_root / repo_id / "comparisons"
+            os.utime(comparisons_root / cmp_one["comparison_id"], (1000, 1000))
+            os.utime(comparisons_root / cmp_two["comparison_id"], (1001, 1001))
+
+            resp = client.get("/comparisons")
+            self.assertEqual(resp.status_code, 200)
+            text = resp.get_data(as_text=True)
+            newer_pos = text.find(f"Comparison ID: {cmp_two['comparison_id']}")
+            older_pos = text.find(f"Comparison ID: {cmp_one['comparison_id']}")
+            self.assertNotEqual(newer_pos, -1)
+            self.assertNotEqual(older_pos, -1)
+            self.assertLess(newer_pos, older_pos)
+
+    def test_comparison_preview_counts_match_snapshot_entry_classification(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            state_root = root / "state"
+            app = create_web_app(repository_path=str(repo), state_root=state_root)
+            client = app.test_client()
+
+            clean_snapshot = create_snapshot(run_scan_with_artifacts(str(repo), state_root=state_root), state_root=state_root)
+
+            (repo / "app.py").write_text("def run():\n    return 99\n", encoding="utf-8")
+            dirty_snapshot = create_snapshot(run_scan_with_artifacts(str(repo), state_root=state_root), state_root=state_root)
+
+            resp = client.get(
+                f"/comparisons?before_snapshot_id={clean_snapshot['snapshot_id']}&after_snapshot_id={dirty_snapshot['snapshot_id']}"
+            )
+            self.assertEqual(resp.status_code, 200)
+            text = resp.get_data(as_text=True)
+            self.assertIn("Working tree counts (snapshot entry classification): staged=0, unstaged=1, untracked=0, conflicts=0", text)
 
     def test_analysis_render_and_provider_failure_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -296,6 +522,50 @@ class WebTests(unittest.TestCase):
             self.assertIn("Workflow Visibility", text)
             self.assertNotIn("Approve Stage", text)
             self.assertNotIn("Approve Commit", text)
+
+    def test_workflow_history_interleaves_stage_and_commit_with_scope_details(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            state_root = root / "state"
+
+            (repo / "app.py").write_text("def run():\n    return 11\n", encoding="utf-8")
+            stage_one = prepare_stage(str(repo), include_all=True, state_root=state_root)
+            execute_prepared_stage(str(repo), stage_one["plan_id"], approve=True, state_root=state_root)
+            create_snapshot(run_scan_with_artifacts(str(repo), state_root=state_root), state_root=state_root)
+            commit_one = prepare_commit(str(repo), "cycle one commit", state_root=state_root)
+            execute_prepared_commit(str(repo), commit_one["plan_id"], approve=True, state_root=state_root)
+
+            (repo / "module_b.py").write_text("def helper():\n    return 7\n", encoding="utf-8")
+            stage_two = prepare_stage(str(repo), include_all=True, state_root=state_root)
+            execute_prepared_stage(str(repo), stage_two["plan_id"], approve=True, state_root=state_root)
+            create_snapshot(run_scan_with_artifacts(str(repo), state_root=state_root), state_root=state_root)
+            commit_two = prepare_commit(str(repo), "cycle two commit", state_root=state_root)
+            execute_prepared_commit(str(repo), commit_two["plan_id"], approve=True, state_root=state_root)
+
+            app = create_web_app(repository_path=str(repo), state_root=state_root)
+            client = app.test_client()
+            resp = client.get("/workflow")
+            text = resp.get_data(as_text=True)
+            self.assertEqual(resp.status_code, 200)
+
+            self.assertIn("Workflow history - newest to oldest.", text)
+            self.assertIn("Stage vs Commit help", text)
+            self.assertIn("View scope", text)
+            self.assertIn("Compatibility indicates whether this historical plan matches the repository's current state", text)
+            self.assertIn("cycle one commit", text)
+
+            stage_one_pos = text.find(stage_one["plan_id"])
+            commit_one_pos = text.find(commit_one["plan_id"])
+            stage_two_pos = text.find(stage_two["plan_id"])
+            commit_two_pos = text.find(commit_two["plan_id"])
+            self.assertNotEqual(stage_one_pos, -1)
+            self.assertNotEqual(commit_one_pos, -1)
+            self.assertNotEqual(stage_two_pos, -1)
+            self.assertNotEqual(commit_two_pos, -1)
+            self.assertLess(commit_two_pos, stage_two_pos)
+            self.assertLess(stage_two_pos, commit_one_pos)
+            self.assertLess(commit_one_pos, stage_one_pos)
 
     def test_forbidden_git_mutation_services_not_invoked_by_web_actions(self) -> None:
         with tempfile.TemporaryDirectory() as td:

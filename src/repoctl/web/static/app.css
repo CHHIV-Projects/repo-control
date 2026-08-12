@@ -68,6 +68,22 @@ body {
 .card.error { border-color: #cf9a81; }
 .grid.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 0.8rem; }
 
+.dashboard-grid {
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+}
+
+.dashboard-grid > .card {
+  grid-column: span 4;
+}
+
+.dashboard-grid > .dashboard-primary {
+  grid-column: span 8;
+}
+
+.dashboard-grid > .dashboard-wide {
+  grid-column: span 6;
+}
+
 .stack-form, .inline-form { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
 .stack-form { flex-direction: column; align-items: flex-start; }
 .stack-form input, .stack-form select { width: min(520px, 100%); }
@@ -91,6 +107,10 @@ input, select {
 
 dl { display: grid; grid-template-columns: auto 1fr; gap: 0.35rem 0.75rem; margin: 0; }
 dt { color: var(--muted); }
+
+.dashboard-primary dd {
+  overflow-wrap: anywhere;
+}
 
 table {
   width: 100%;
@@ -122,6 +142,20 @@ ul {
 .flash.success { border-color: #7db39d; }
 .footer { color: var(--muted); font-size: 0.9rem; padding-bottom: 1.25rem; }
 
+.row-selected {
+  background: #f1f8f6;
+}
+
+.selected-snapshot-card {
+  border-color: #7db39d;
+}
+
 @media (max-width: 760px) {
   .site-header { flex-direction: column; gap: 0.8rem; }
+  .dashboard-grid { grid-template-columns: 1fr; }
+  .dashboard-grid > .card,
+  .dashboard-grid > .dashboard-primary,
+  .dashboard-grid > .dashboard-wide {
+    grid-column: span 1;
+  }
 }
