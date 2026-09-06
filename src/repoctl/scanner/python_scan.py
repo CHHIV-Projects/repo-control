@@ -16,6 +16,7 @@ class ParsedPythonFile:
     imports: list[dict]
     imported_module_names: list[str]
     imported_symbols: list[dict]
+    source_evidence: list[dict]
 
 
 def _line_span(node: ast.AST) -> tuple[int | None, int | None]:
@@ -37,6 +38,7 @@ def parse_python_file(repo_root: Path, relative_path: str) -> ParsedPythonFile:
             imports=[],
             imported_module_names=[],
             imported_symbols=[],
+            source_evidence=[],
         )
 
     try:
@@ -53,6 +55,7 @@ def parse_python_file(repo_root: Path, relative_path: str) -> ParsedPythonFile:
             imports=[],
             imported_module_names=[],
             imported_symbols=[],
+            source_evidence=[],
         )
 
     functions: list[dict] = []
@@ -61,6 +64,7 @@ def parse_python_file(repo_root: Path, relative_path: str) -> ParsedPythonFile:
     imports: list[dict] = []
     module_names: set[str] = set()
     imported_symbols: list[dict] = []
+    source_evidence: list[dict] = []
 
     for node in tree.body:
         if isinstance(node, ast.FunctionDef):
@@ -87,6 +91,16 @@ def parse_python_file(repo_root: Path, relative_path: str) -> ParsedPythonFile:
                     {"module": alias.name, "symbol": None, "asname": alias.asname, "kind": "import"}
                 )
             imports.append({"kind": "import", "module": None, "level": 0, "names": imported})
+            for alias in node.names:
+                source_evidence.append(
+                    {
+                        "evidence_kind": "import",
+                        "imported_module": alias.name,
+                        "imported_symbol": None,
+                        "start_line": getattr(node, "lineno", None),
+                        "end_line": getattr(node, "end_lineno", None),
+                    }
+                )
             continue
 
         if isinstance(node, ast.ImportFrom):
@@ -112,6 +126,55 @@ def parse_python_file(repo_root: Path, relative_path: str) -> ParsedPythonFile:
                     "names": imported,
                 }
             )
+            for alias in node.names:
+                source_evidence.append(
+                    {
+                        "evidence_kind": "import",
+                        "imported_module": mod,
+                        "imported_symbol": alias.name,
+                        "start_line": getattr(node, "lineno", None),
+                        "end_line": getattr(node, "end_lineno", None),
+                    }
+                )
+
+    parent_nodes: dict[ast.AST, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parent_nodes[child] = parent
+
+    def enclosing_symbol_for(node: ast.AST) -> dict | None:
+        current = parent_nodes.get(node)
+        while current is not None:
+            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                return {
+                    "name": current.name,
+                    "kind": (
+                        "async_function"
+                        if isinstance(current, ast.AsyncFunctionDef)
+                        else "function"
+                        if isinstance(current, ast.FunctionDef)
+                        else "class"
+                    ),
+                    "start_line": getattr(current, "lineno", None),
+                    "end_line": getattr(current, "end_lineno", None),
+                }
+            current = parent_nodes.get(current)
+        return None
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            base = node.value.id if isinstance(node.value, ast.Name) else None
+            evidence = {
+                "evidence_kind": "attribute",
+                "attribute_name": node.attr,
+                "base": base,
+                "expression": f"{base}.{node.attr}" if base else None,
+                "start_line": getattr(node, "lineno", None),
+                "end_line": getattr(node, "end_lineno", None),
+                "enclosing_symbol": enclosing_symbol_for(node),
+                "scope": "module_scope" if enclosing_symbol_for(node) is None else "symbol",
+            }
+            source_evidence.append(evidence)
 
     functions.sort(key=lambda item: (item["start_line"] or 0, item["name"]))
     async_functions.sort(key=lambda item: (item["start_line"] or 0, item["name"]))
@@ -127,6 +190,15 @@ def parse_python_file(repo_root: Path, relative_path: str) -> ParsedPythonFile:
         imports=imports,
         imported_module_names=sorted(module_names),
         imported_symbols=imported_symbols,
+        source_evidence=sorted(
+            source_evidence,
+            key=lambda item: (
+                item.get("start_line") or 0,
+                item.get("end_line") or 0,
+                item.get("evidence_kind", ""),
+                item.get("attribute_name") or item.get("imported_module") or "",
+            ),
+        ),
     )
 
 

@@ -116,6 +116,120 @@ class ContextTests(unittest.TestCase):
             self.assertEqual(payload["match_status"], MATCH_STATUS_NO_MATCHES)
             self.assertEqual(payload["selected_files"], [])
 
+    def test_source_evidence_preserves_import_attribute_string_and_dependency_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            (repo / "requirements.txt").write_text("sample-lib\n", encoding="utf-8")
+            (repo / "app.py").write_text(
+                "import sample_lib\n\nstate = sample_lib.session_state\nmessage = 'Practice words'\n",
+                encoding="utf-8",
+            )
+            _git(repo, "add", ".")
+            _git(repo, "commit", "-m", "source evidence")
+            scan = run_scan_with_artifacts(str(repo), state_root=root / "state")
+
+            for query, evidence_kind in (("sample_lib", "import"), ("session_state", "attribute"), ("practice", "string_literal"), ("sample", "dependency")):
+                result = build_and_publish_context(scan_result=scan, query=query)
+                payload = json.loads((Path(result["context_dir"]) / "context.json").read_text(encoding="utf-8"))
+                evidence = [seed for seed in payload["seed_matches"] if seed.get("evidence_kind") == evidence_kind]
+                self.assertTrue(evidence, query)
+                self.assertIn("app.py" if evidence_kind != "dependency" else "requirements.txt", [row["path"] for row in payload["selected_files"]])
+
+    def test_source_evidence_uses_same_file_multiword_matching(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            (repo / "app.py").write_text("google_term = 'google'\nsheet_term = 'sheets'\n", encoding="utf-8")
+            _git(repo, "add", "app.py")
+            _git(repo, "commit", "-m", "multiword source evidence")
+            scan = run_scan_with_artifacts(str(repo), state_root=root / "state")
+            result = build_and_publish_context(scan_result=scan, query="google sheets")
+            payload = json.loads((Path(result["context_dir"]) / "context.json").read_text(encoding="utf-8"))
+            matches = [seed for seed in payload["seed_matches"] if seed.get("evidence_kind") == "string_literal"]
+            self.assertEqual({token for match in matches for token in match["matched_tokens"]}, {"google", "sheets"})
+            self.assertTrue(all("same-file token-AND evidence" in match["reason"] for match in matches))
+            self.assertEqual([row["path"] for row in payload["selected_files"]], ["app.py"])
+
+    def test_source_evidence_maps_to_enclosing_symbol(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            (repo / "app.py").write_text(
+                "def persist():\n    value = 'practice'\n    return value\n",
+                encoding="utf-8",
+            )
+            _git(repo, "add", "app.py")
+            _git(repo, "commit", "-m", "enclosing source evidence")
+            scan = run_scan_with_artifacts(str(repo), state_root=root / "state")
+            result = build_and_publish_context(scan_result=scan, query="practice")
+            payload = json.loads((Path(result["context_dir"]) / "context.json").read_text(encoding="utf-8"))
+            evidence = [seed for seed in payload["seed_matches"] if seed.get("evidence_kind") == "string_literal"]
+            self.assertEqual(evidence[0]["evidence"]["enclosing_symbol"]["name"], "persist")
+            self.assertIn("persist", [symbol["symbol_name"] for symbol in payload["selected_symbols"]])
+
+    def test_secret_named_python_files_are_excluded_from_source_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            (repo / "credentials.py").write_text("secret_value = 'fake-secret-value'\n", encoding="utf-8")
+            _git(repo, "add", "credentials.py")
+            _git(repo, "commit", "-m", "secret fixture")
+            scan = run_scan_with_artifacts(str(repo), state_root=root / "state")
+            result = build_and_publish_context(scan_result=scan, query="fake-secret-value")
+            payload = json.loads((Path(result["context_dir"]) / "context.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload["match_status"], MATCH_STATUS_NO_MATCHES)
+            self.assertEqual(payload["selected_files"], [])
+
+    def test_source_evidence_module_scope_priority_bounds_and_line_ranges(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            (repo / "app.py").write_text(
+                "target = 'target'\n\ndef target():\n    return 'target'\n" + "\n".join(f"noise_{i} = 'noise'" for i in range(30)) + "\n",
+                encoding="utf-8",
+            )
+            _git(repo, "add", "app.py")
+            _git(repo, "commit", "-m", "module scope and priority")
+            scan = run_scan_with_artifacts(str(repo), state_root=root / "state")
+
+            target_result = build_and_publish_context(scan_result=scan, query="target")
+            target_payload = json.loads((Path(target_result["context_dir"]) / "context.json").read_text(encoding="utf-8"))
+            self.assertEqual(target_payload["seed_matches"][0]["seed_type"], "symbol")
+            self.assertEqual(target_payload["seed_matches"][0]["symbol_name"], "target")
+
+            noise_result = build_and_publish_context(scan_result=scan, query="noise")
+            noise_payload = json.loads((Path(noise_result["context_dir"]) / "context.json").read_text(encoding="utf-8"))
+            self.assertLessEqual(len(noise_payload["seed_matches"]), 12)
+            string_matches = [seed for seed in noise_payload["seed_matches"] if seed.get("evidence_kind") == "string_literal"]
+            self.assertTrue(string_matches)
+            self.assertTrue(all(seed["evidence"]["scope"] == "module_scope" for seed in string_matches))
+            self.assertTrue(all(seed["evidence"]["start_line"] <= seed["evidence"]["end_line"] for seed in string_matches))
+
+            repeat_result = build_and_publish_context(scan_result=scan, query="noise")
+            repeat_payload = json.loads((Path(repeat_result["context_dir"]) / "context.json").read_text(encoding="utf-8"))
+            self.assertEqual(noise_payload["seed_matches"], repeat_payload["seed_matches"])
+
+    def test_ignored_source_and_incidental_or_database_terms_do_not_claim_implementations(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            (repo / ".gitignore").write_text("ignored.py\n", encoding="utf-8")
+            (repo / "ignored.py").write_text("secret_value = 'container database'\n", encoding="utf-8")
+            (repo / "app.py").write_text("width = 'use_container_width'\nmessage = 'database error'\n", encoding="utf-8")
+            _git(repo, "add", ".gitignore", "app.py")
+            _git(repo, "commit", "-m", "ignored and negative controls")
+            scan = run_scan_with_artifacts(str(repo), state_root=root / "state")
+
+            for query in ("container", "database"):
+                result = build_and_publish_context(scan_result=scan, query=query)
+                payload = json.loads((Path(result["context_dir"]) / "context.json").read_text(encoding="utf-8"))
+                self.assertNotIn("ignored.py", [row["path"] for row in payload["selected_files"]])
+                self.assertFalse(any(row.get("symbol_name") == "database" for row in payload["selected_symbols"]))
+                if query == "container":
+                    self.assertFalse(payload["selected_symbols"])
+                    self.assertTrue(all(seed.get("evidence_kind") == "string_literal" for seed in payload["seed_matches"]))
+
     def test_related_test_inclusion(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

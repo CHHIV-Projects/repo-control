@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import shutil
 from pathlib import Path
 from tempfile import mkdtemp
@@ -19,14 +20,23 @@ from .policy import (
     SELECTION_CONTRACT_VERSION,
     WEIGHT_EXACT_PATH_OR_MODULE_COMPONENT,
     WEIGHT_EXACT_SYMBOL_NAME,
+    WEIGHT_EXACT_ATTRIBUTE,
+    WEIGHT_EXACT_IMPORT_OR_DEPENDENCY,
     WEIGHT_FULL_QUERY_SUBSTRING,
     WEIGHT_MULTI_TOKEN,
+    WEIGHT_SOURCE_TOKEN,
     WEIGHT_SINGLE_TOKEN,
     QueryInfo,
     build_query_info,
     count_token_matches,
     tokenize_text,
 )
+
+
+def _safe_python_path(path: str) -> bool:
+    name = Path(path).name.casefold()
+    blocked_fragments = (".env", "credential", "secret", "service_account", "private_key", "token")
+    return Path(path).suffix.casefold() == ".py" and not any(fragment in name for fragment in blocked_fragments)
 
 
 def _line_key(value: int | None) -> int:
@@ -124,7 +134,67 @@ def _seed_sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
-def _build_seeds(symbols_payload: dict[str, Any], dependencies_payload: dict[str, Any], query_info: QueryInfo) -> dict[str, Any]:
+def _query_string_evidence(repository_payload: dict[str, Any], symbols_payload: dict[str, Any], query_info: QueryInfo) -> list[dict[str, Any]]:
+    repo_root = Path(repository_payload["repository_root"])
+    evidence: list[dict[str, Any]] = []
+    for file_record in symbols_payload.get("python_files", []):
+        path = file_record["path"]
+        if not _safe_python_path(path):
+            continue
+        source_path = repo_root / path
+        try:
+            source = source_path.read_text(encoding="utf-8")
+            tree = ast.parse(source, filename=path)
+        except (OSError, UnicodeDecodeError, SyntaxError):
+            continue
+
+        docstring_nodes: set[ast.AST] = set()
+        for parent in ast.walk(tree):
+            body = getattr(parent, "body", None)
+            if isinstance(body, list) and body and isinstance(body[0], ast.Expr) and isinstance(getattr(body[0], "value", None), ast.Constant):
+                if isinstance(body[0].value.value, str):
+                    docstring_nodes.add(body[0].value)
+
+        parents: dict[ast.AST, ast.AST] = {}
+        for parent in ast.walk(tree):
+            for child in ast.iter_child_nodes(parent):
+                parents[child] = parent
+
+        def enclosing(node: ast.AST) -> dict[str, Any] | None:
+            current = parents.get(node)
+            while current is not None:
+                if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    kind = "class" if isinstance(current, ast.ClassDef) else "async_function" if isinstance(current, ast.AsyncFunctionDef) else "function"
+                    return {"name": current.name, "kind": kind, "start_line": current.lineno, "end_line": current.end_lineno}
+                current = parents.get(current)
+            return None
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str) or node.value in docstring_nodes:
+                continue
+            if "\n" in node.value or len(node.value) > 256:
+                continue
+            folded = node.value.casefold()
+            matched_tokens = sorted(count_token_matches(query_info.query_tokens, [folded]))
+            if not matched_tokens:
+                continue
+            scope = enclosing(node)
+            evidence.append(
+                {
+                    "evidence_kind": "string_literal",
+                    "path": path,
+                    "start_line": getattr(node, "lineno", None),
+                    "end_line": getattr(node, "end_lineno", None),
+                    "matched_tokens": matched_tokens,
+                    "enclosing_symbol": scope,
+                    "scope": "module_scope" if scope is None else "symbol",
+                    "score": WEIGHT_SOURCE_TOKEN + len(matched_tokens),
+                }
+            )
+    return evidence
+
+
+def _build_seeds(repository_payload: dict[str, Any], symbols_payload: dict[str, Any], dependencies_payload: dict[str, Any], query_info: QueryInfo) -> dict[str, Any]:
     module_candidates_by_path = _collect_module_candidates(dependencies_payload)
 
     raw_candidates: list[dict[str, Any]] = []
@@ -164,6 +234,90 @@ def _build_seeds(symbols_payload: dict[str, Any], dependencies_payload: dict[str
                 )
                 if symbol_seed:
                     raw_candidates.append(symbol_seed)
+
+        for evidence in file_record.get("source_evidence", []):
+            if not _safe_python_path(path):
+                continue
+            fields = [
+                evidence.get("imported_module") or "",
+                evidence.get("imported_symbol") or "",
+                evidence.get("attribute_name") or "",
+                evidence.get("expression") or "",
+            ]
+            matched_tokens = count_token_matches(query_info.query_tokens, [field.casefold() for field in fields if field])
+            if not matched_tokens:
+                continue
+            kind = evidence["evidence_kind"]
+            score = WEIGHT_EXACT_IMPORT_OR_DEPENDENCY if kind == "import" else WEIGHT_EXACT_ATTRIBUTE
+            raw_candidates.append(
+                {
+                    "seed_type": "evidence",
+                    "identity": ("evidence", path, kind, evidence.get("start_line"), evidence.get("imported_module"), evidence.get("attribute_name")),
+                    "path": path,
+                    "symbol_kind": None,
+                    "symbol_name": None,
+                    "start_line": evidence.get("start_line"),
+                    "evidence_kind": kind,
+                    "evidence": {**evidence, "matched_tokens": sorted(matched_tokens)},
+                    "score": score + len(matched_tokens),
+                    "matched_token_count": len(matched_tokens),
+                    "matched_tokens": sorted(matched_tokens),
+                    "reason": f"{kind} evidence: {', '.join(sorted(matched_tokens))}",
+                }
+            )
+
+    for evidence in _query_string_evidence(repository_payload, symbols_payload, query_info):
+        raw_candidates.append(
+            {
+                "seed_type": "evidence",
+                "identity": ("evidence", evidence["path"], "string_literal", evidence["start_line"]),
+                "path": evidence["path"],
+                "symbol_kind": None,
+                "symbol_name": None,
+                "start_line": evidence["start_line"],
+                "evidence_kind": "string_literal",
+                "evidence": evidence,
+                "score": evidence["score"],
+                "matched_token_count": len(evidence["matched_tokens"]),
+                "matched_tokens": evidence["matched_tokens"],
+                "reason": f"string_literal evidence: {', '.join(evidence['matched_tokens'])}",
+            }
+            )
+
+    for requirement in repository_payload.get("requirements", []):
+        for line_number, declaration in enumerate(requirement.get("declarations", []), start=1):
+            matched_tokens = count_token_matches(query_info.query_tokens, [declaration.casefold()])
+            if not matched_tokens:
+                continue
+            raw_candidates.append(
+                {
+                    "seed_type": "evidence",
+                    "identity": ("evidence", requirement["path"], "dependency", line_number, declaration),
+                    "path": requirement["path"],
+                    "symbol_kind": None,
+                    "symbol_name": None,
+                    "start_line": line_number,
+                    "evidence_kind": "dependency",
+                    "evidence": {"evidence_kind": "dependency", "path": requirement["path"], "start_line": line_number, "matched_tokens": sorted(matched_tokens)},
+                    "score": WEIGHT_EXACT_IMPORT_OR_DEPENDENCY + len(matched_tokens),
+                    "matched_token_count": len(matched_tokens),
+                    "matched_tokens": sorted(matched_tokens),
+                    "reason": f"dependency evidence: {', '.join(sorted(matched_tokens))}",
+                }
+            )
+
+    evidence_by_file: dict[str, list[dict[str, Any]]] = {}
+    for candidate in raw_candidates:
+        if candidate["seed_type"] == "evidence":
+            evidence_by_file.setdefault(candidate["path"], []).append(candidate)
+    required_tokens = set(query_info.query_tokens)
+    if len(required_tokens) > 1:
+        for candidates in evidence_by_file.values():
+            file_tokens = {token for candidate in candidates for token in candidate["matched_tokens"]}
+            if required_tokens.issubset(file_tokens):
+                for candidate in candidates:
+                    candidate["score"] += WEIGHT_MULTI_TOKEN
+                    candidate["reason"] = f"same-file token-AND evidence: {', '.join(candidate['matched_tokens'])}"
 
     # Deduplicate by typed seed identity, keeping the strongest record.
     best_by_identity: dict[tuple[Any, ...], dict[str, Any]] = {}
@@ -297,7 +451,7 @@ def _select_context(
     dependencies_payload: dict[str, Any],
     query_info: QueryInfo,
 ) -> dict[str, Any]:
-    seed_info = _build_seeds(symbols_payload, dependencies_payload, query_info)
+    seed_info = _build_seeds(repository_payload, symbols_payload, dependencies_payload, query_info)
     selected_seeds = seed_info["selected"]
 
     seed_symbol_ids = {
@@ -305,9 +459,16 @@ def _select_context(
         for s in selected_seeds
         if s["seed_type"] == "symbol"
     }
+    for seed in selected_seeds:
+        enclosing = seed.get("evidence", {}).get("enclosing_symbol")
+        if seed["seed_type"] == "evidence" and enclosing:
+            seed_symbol_ids.add(
+                _symbol_identity(seed["path"], enclosing["kind"], enclosing["name"], enclosing.get("start_line"))
+            )
     seed_symbol_files = {s["path"] for s in selected_seeds if s["seed_type"] == "symbol"}
     seed_files_direct = {s["path"] for s in selected_seeds if s["seed_type"] == "file"}
-    seed_all_files = set(seed_symbol_files) | set(seed_files_direct)
+    seed_evidence_files = {s["path"] for s in selected_seeds if s["seed_type"] == "evidence"}
+    seed_all_files = set(seed_symbol_files) | set(seed_files_direct) | set(seed_evidence_files)
 
     all_relationships = _flatten_relationships(dependencies_payload, tests_payload)
 
@@ -360,6 +521,8 @@ def _select_context(
     for seed in selected_seeds:
         if seed["seed_type"] == "symbol":
             add_file(seed["path"], 1, seed["reason"], seed["score"])
+        elif seed["seed_type"] == "file":
+            add_file(seed["path"], 2, seed["reason"], seed["score"])
         else:
             add_file(seed["path"], 2, seed["reason"], seed["score"])
 
@@ -409,6 +572,11 @@ def _select_context(
                 )
 
     seed_symbol_lookup = {(s["path"], s["symbol_kind"], s["symbol_name"], s["start_line"]): s for s in selected_seeds if s["seed_type"] == "symbol"}
+    enclosing_symbol_lookup = {
+        (s["path"], s["evidence"]["enclosing_symbol"]["kind"], s["evidence"]["enclosing_symbol"]["name"], s["evidence"]["enclosing_symbol"].get("start_line")): s
+        for s in selected_seeds
+        if s["seed_type"] == "evidence" and s.get("evidence", {}).get("enclosing_symbol")
+    }
 
     related_symbol_keys: set[tuple[str, str, str, int | None]] = set()
     for rel in one_hop_relationships:
@@ -429,6 +597,18 @@ def _select_context(
                     "priority": 1,
                     "reason": seed_symbol_lookup[sid_full]["reason"],
                     "seed_score": seed_symbol_lookup[sid_full]["score"],
+                }
+            )
+            continue
+
+        if sid_full in enclosing_symbol_lookup:
+            evidence_seed = enclosing_symbol_lookup[sid_full]
+            selected_symbols_raw.append(
+                {
+                    **sym,
+                    "priority": 2,
+                    "reason": f"enclosing symbol for {evidence_seed['evidence_kind']} evidence",
+                    "seed_score": evidence_seed["score"],
                 }
             )
             continue
@@ -620,6 +800,18 @@ def _render_context_markdown(context_json: dict[str, Any]) -> str:
         for sym in context_json["selected_symbols"]:
             lines.append(
                 f"- {sym['path']}::{sym['symbol_name']} ({sym['symbol_kind']}) line={sym['start_line']} reason={sym['reason']}"
+            )
+    lines.append("")
+
+    lines.append("## Discovery Evidence")
+    if not context_json["seed_matches"]:
+        lines.append("- none")
+    else:
+        for seed in context_json["seed_matches"]:
+            evidence_kind = seed.get("evidence_kind", seed.get("seed_type", "unknown"))
+            tokens = ", ".join(seed.get("matched_tokens", [])) or "none"
+            lines.append(
+                f"- {evidence_kind} | {seed['path']} | line={seed.get('start_line', 'unknown')} | tokens={tokens} | {seed['reason']}"
             )
     lines.append("")
 

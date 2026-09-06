@@ -81,6 +81,7 @@ def _build_symbols_payload(repo_root: Path, tracked_files: list[str]) -> dict[st
                 "imports": parsed.imports,
                 "imported_module_names": parsed.imported_module_names,
                 "imported_symbols": parsed.imported_symbols,
+                "source_evidence": parsed.source_evidence,
             }
         )
 
