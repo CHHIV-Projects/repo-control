@@ -15,7 +15,7 @@
       <div class="muted">Prepare Stage is not available for the current workflow state: {{ workflow_state }}</div>
     {% endif %}
 
-    {% if workflow_state == 'staged_only' %}
+    {% if workflow_state == 'staged_only' and matching_snapshot_exists %}
       <form method="post" action="{{ url_for('workflow_prepare_commit_action') }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label for="commit_message">Commit message</label>
@@ -23,7 +23,22 @@
         <button type="submit" class="primary">Prepare Commit</button>
       </form>
     {% else %}
-      <div class="muted">Prepare Commit is not available for the current workflow state: {{ workflow_state }}</div>
+      {% if workflow_state == 'staged_only' and not matching_snapshot_exists %}
+        <div>
+          <p class="muted">Matching Snapshot required before Prepare Commit.</p>
+          <p class="muted">Snapshot: none</p>
+          <form method="post" action="{{ url_for('workflow_create_snapshot_action') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="primary">Create Matching Snapshot</button>
+          </form>
+        </div>
+      {% else %}
+        <div class="muted">Prepare Commit is not available for the current workflow state: {{ workflow_state }}</div>
+      {% endif %}
+    {% endif %}
+
+    {% if workflow_state == 'staged_only' and matching_snapshot_exists %}
+      <div class="muted">Matching Snapshot available: {{ matching_snapshot_id }}</div>
     {% endif %}
   </div>
 

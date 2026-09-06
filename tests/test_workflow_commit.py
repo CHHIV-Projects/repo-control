@@ -15,6 +15,9 @@ from repoctl.workflow import commit_execution as commit_execution_module
 from repoctl.workflow.commit_execution import execute_prepared_commit
 from repoctl.workflow.commit_plan import prepare_commit
 from repoctl.workflow.errors import WorkflowReasonError
+from repoctl.web.views import summarize_workflow_artifacts
+from repoctl.workflow.git_state import inspect_git_state
+from repoctl.web.app import create_web_app
 
 
 def _git(repo: Path, *args: str) -> bytes:
@@ -375,6 +378,53 @@ class WorkflowCommitTests(unittest.TestCase):
             self.assertEqual(cm.exception.code, "post_commit_verification_failed")
             self.assertNotEqual(before, _git_text(repo, "rev-parse", "HEAD"))
             self.assertIsNotNone(cm.exception.commit_id)
+            repo_id = plan["repository_id"]
+            executions = list((state / repo_id / "workflow" / "commit_executions").iterdir())
+            audits = list((state / repo_id / "workflow" / "commit_audits").iterdir())
+            self.assertEqual(len(executions), 1)
+            self.assertEqual(len(audits), 1)
+            rows = summarize_workflow_artifacts(state / repo_id / "workflow", inspect_git_state(str(repo)))
+            commit_row = next(row for row in rows if row.family == "COMMIT")
+            self.assertIsNotNone(commit_row.execution)
+            self.assertIn("audit failed", commit_row.execution.status.lower())
+            self.assertNotEqual(commit_row.execution.status, "Not executed")
+            app = create_web_app(repository_path=str(repo), state_root=state)
+            workflow_text = app.test_client().get("/workflow").get_data(as_text=True)
+            self.assertNotIn('action="/workflow/commit/prepare"', workflow_text)
+            self.assertIn("Do not retry automatically", workflow_text)
+
+    def test_nested_paths_match_staged_fingerprint_after_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            state = root / "state"
+            nested = repo / "milestones" / "nested"
+            nested.mkdir(parents=True)
+            (nested / "added.md").write_text("added\n", encoding="utf-8")
+            (repo / "app.py").write_text("def run():\n    return 2\n", encoding="utf-8")
+            _git(repo, "add", "milestones/nested/added.md", "app.py")
+            scan = run_scan_with_artifacts(str(repo), state_root=state)
+            snapshot = create_snapshot(scan, state_root=state)
+            snapshot_dir = Path(snapshot["snapshot_dir"])
+            snapshot_bytes_before = {
+                path.name: path.read_bytes()
+                for path in snapshot_dir.iterdir()
+                if path.is_file()
+            }
+            plan = prepare_commit(str(repo), "nested commit", state_root=state)
+            result = execute_prepared_commit(str(repo), plan["plan_id"], True, state_root=state)
+            self.assertEqual(_git_text(repo, "status", "--short"), "")
+            execution = json.loads((Path(result["execution_dir"]) / "execution.json").read_text(encoding="utf-8"))
+            self.assertEqual(execution["verification"]["status"], "pending")
+            audit_root = state / plan["repository_id"] / "workflow" / "commit_audits"
+            audits = [json.loads((path / "audit.json").read_text(encoding="utf-8")) for path in audit_root.iterdir()]
+            self.assertEqual(audits[0]["outcome"], "verified")
+            snapshot_bytes_after = {
+                path.name: path.read_bytes()
+                for path in snapshot_dir.iterdir()
+                if path.is_file()
+            }
+            self.assertEqual(snapshot_bytes_before, snapshot_bytes_after)
 
     def test_genuine_post_commit_mismatch_still_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as td:

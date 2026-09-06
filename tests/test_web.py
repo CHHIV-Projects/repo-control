@@ -544,7 +544,8 @@ class WebTests(unittest.TestCase):
             self.assertIn("staged_only", staged_text)
             self.assertNotIn('action="/workflow/stage/prepare"', staged_text)
             self.assertNotIn('<button type="submit" class="primary">Prepare Stage</button>', staged_text)
-            self.assertIn('action="/workflow/commit/prepare"', staged_text)
+            self.assertIn("Matching Snapshot required", staged_text)
+            self.assertIn('action="/workflow/snapshot/create"', staged_text)
 
     def test_workflow_page_commit_eligibility_follows_canonical_state(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -571,8 +572,32 @@ class WebTests(unittest.TestCase):
             resp_staged = client.get("/workflow")
             staged_text = resp_staged.get_data(as_text=True)
             self.assertIn("staged_only", staged_text)
-            self.assertIn('action="/workflow/commit/prepare"', staged_text)
-            self.assertIn('<button type="submit" class="primary">Prepare Commit</button>', staged_text)
+            self.assertIn("Matching Snapshot required", staged_text)
+            self.assertNotIn('action="/workflow/commit/prepare"', staged_text)
+
+    def test_workflow_can_create_matching_snapshot_explicitly(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = _init_repo(root)
+            state_root = root / "state"
+            (repo / "module_c.py").write_text("def helper_two():\n    return 2\n", encoding="utf-8")
+            _git(repo, "add", "module_c.py")
+            app = create_web_app(repository_path=str(repo), state_root=state_root)
+            client = app.test_client()
+            client.get("/workflow")
+            csrf = _extract_csrf_token(client)
+
+            before = client.get("/workflow")
+            self.assertIn("Matching Snapshot required", before.get_data(as_text=True))
+            created = client.post(
+                "/workflow/snapshot/create",
+                data={"csrf_token": csrf},
+                follow_redirects=True,
+            )
+            created_text = created.get_data(as_text=True)
+            self.assertEqual(created.status_code, 200)
+            self.assertIn("Matching Snapshot available", created_text)
+            self.assertIn('action="/workflow/commit/prepare"', created_text)
 
     def test_workflow_stage_review_and_approve_flow(self) -> None:
         with tempfile.TemporaryDirectory() as td:

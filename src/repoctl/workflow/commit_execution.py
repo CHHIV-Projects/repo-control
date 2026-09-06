@@ -216,7 +216,7 @@ def _verify_post_commit(
     if branch_name != plan["branch"]["name"]:
         raise WorkflowReasonError("post_commit_verification_failed", "branch changed during commit execution")
 
-    raw = _run_git_bytes(repo_root, ["diff-tree", "--raw", "--no-renames", "--abbrev=40", "--no-commit-id", "-z", before_head, after_head])
+    raw = _run_git_bytes(repo_root, ["diff-tree", "--raw", "--no-renames", "--abbrev=40", "--no-commit-id", "-z", "-r", before_head, after_head])
     records = _parse_raw_records(raw)
     committed_delta_fingerprint = _delta_fingerprint_from_records(records)
     if committed_delta_fingerprint != plan["staged_delta_fingerprint"]:
@@ -277,6 +277,50 @@ def _build_execution_markdown(payload: dict[str, Any]) -> str:
         lines.append(f"- {key}: {value}")
 
     return "\n".join(lines) + "\n"
+
+
+def _build_audit_markdown(payload: dict[str, Any]) -> str:
+    lines = [
+        "# Commit Audit Outcome",
+        "",
+        f"- Audit id: {payload['audit_id']}",
+        f"- Execution id: {payload['execution_id']}",
+        f"- Plan id: {payload['plan_id']}",
+        f"- Mutation succeeded: {payload['mutation_succeeded']}",
+        f"- Resulting HEAD: {payload['head_after']}",
+        f"- Outcome: {payload['outcome']}",
+        f"- Reason: {payload.get('reason', '')}",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _derive_audit_id(payload: dict[str, Any]) -> str:
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return "commit-audit--" + hashlib.sha256(canonical).hexdigest()[:16]
+
+
+def _publish_audit(audit_root: Path, payload: dict[str, Any]) -> str:
+    audit_root.mkdir(parents=True, exist_ok=True)
+    base = dict(payload)
+    audit_id = _derive_audit_id(base)
+    full = {**base, "audit_id": audit_id}
+    final_dir = audit_root / audit_id
+    temp_dir = Path(mkdtemp(prefix="commit-audit-tmp-", dir=str(audit_root)))
+    try:
+        write_json_deterministic(temp_dir / "audit.json", full)
+        (temp_dir / "audit.md").write_text(_build_audit_markdown(full), encoding="utf-8", newline="\n")
+        if final_dir.exists():
+            if (final_dir / "audit.json").read_bytes() != (temp_dir / "audit.json").read_bytes():
+                raise WorkflowReasonError("commit_succeeded_audit_failed", "existing audit content mismatch for identical audit id")
+            shutil.rmtree(temp_dir)
+            return audit_id
+        temp_dir.rename(final_dir)
+        return audit_id
+    except Exception:
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir)
+        raise
 
 
 def _verify_execution_dir(execution_dir: Path, expected_id: str) -> dict[str, Any]:
@@ -382,22 +426,7 @@ def execute_prepared_commit(
 
     after_head = _run_git_text(repo_root, ["rev-parse", "HEAD"]).strip()
 
-    try:
-        verification = _verify_post_commit(
-            repo_root,
-            plan,
-            before_head,
-            after_head,
-            force_failure=_test_force_post_verify_failure,
-        )
-    except WorkflowReasonError as exc:
-        raise WorkflowReasonError(
-            "post_commit_verification_failed",
-            f"post-commit verification failed after commit (old HEAD={before_head}, new HEAD={after_head}): {exc.safe_message}",
-            commit_id=after_head,
-        ) from exc
-
-    base_payload = {
+    mutation_payload = {
         "schema_version": 1,
         "plan_id": plan["plan_id"],
         "repository_id": repo_id,
@@ -410,22 +439,81 @@ def execute_prepared_commit(
         "staged_state_fingerprint": plan["staged_state_fingerprint"],
         "staged_delta_fingerprint": plan["staged_delta_fingerprint"],
         "staged_summary": plan["staged_summary"],
-        "verification": verification,
+        "mutation_succeeded": True,
+        "verification": {"status": "pending"},
         "remote_refresh_performed": False,
         "push_performed": False,
     }
-    execution_id = _derive_execution_id(base_payload)
-    execution_payload = dict(base_payload)
-    execution_payload["execution_id"] = execution_id
+    execution_id = _derive_execution_id(mutation_payload)
+    execution_payload = {**mutation_payload, "execution_id": execution_id}
     execution_markdown = _build_execution_markdown(execution_payload)
-
     execution_root = root / repo_id / "workflow" / "commit_executions"
     try:
         execution_dir, reused_existing = _publish_execution(
             execution_root,
             execution_payload,
             execution_markdown,
-            force_failure=_test_force_audit_failure,
+            force_failure=False,
+        )
+    except WorkflowReasonError as exc:
+        raise WorkflowReasonError(
+            "commit_succeeded_audit_failed",
+            f"commit succeeded but mutation evidence write failed; resulting commit id: {after_head}; detail: {exc.safe_message}",
+            commit_id=after_head,
+        ) from exc
+
+    try:
+        verification = _verify_post_commit(
+            repo_root,
+            plan,
+            before_head,
+            after_head,
+            force_failure=_test_force_post_verify_failure,
+        )
+    except WorkflowReasonError as exc:
+        try:
+            _publish_audit(
+                root / repo_id / "workflow" / "commit_audits",
+                {
+                    "execution_id": execution_id,
+                    "plan_id": plan["plan_id"],
+                    "repository_id": repo_id,
+                    "repository_root": str(repo_root),
+                    "head_before": before_head,
+                    "head_after": after_head,
+                    "mutation_succeeded": True,
+                    "outcome": "mutation_succeeded_audit_failed",
+                    "reason": exc.safe_message,
+                },
+            )
+        except WorkflowReasonError as audit_exc:
+            raise WorkflowReasonError(
+                "commit_succeeded_audit_failed",
+                f"commit succeeded but audit outcome write failed; resulting commit id: {after_head}; detail: {audit_exc.safe_message}",
+                commit_id=after_head,
+            ) from audit_exc
+        raise WorkflowReasonError(
+            "post_commit_verification_failed",
+            f"post-commit verification failed after commit (old HEAD={before_head}, new HEAD={after_head}, execution={execution_id}): {exc.safe_message}",
+            commit_id=after_head,
+        ) from exc
+
+    try:
+        if _test_force_audit_failure:
+            raise WorkflowReasonError("commit_succeeded_audit_failed", "controlled execution audit failure")
+        _publish_audit(
+            root / repo_id / "workflow" / "commit_audits",
+            {
+                "execution_id": execution_id,
+                "plan_id": plan["plan_id"],
+                "repository_id": repo_id,
+                "repository_root": str(repo_root),
+                "head_before": before_head,
+                "head_after": after_head,
+                "mutation_succeeded": True,
+                "outcome": "verified",
+                "reason": "post-commit verification passed",
+            },
         )
     except WorkflowReasonError as exc:
         raise WorkflowReasonError(

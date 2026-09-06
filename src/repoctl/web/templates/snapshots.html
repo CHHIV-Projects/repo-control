@@ -31,7 +31,8 @@
       {% for row in snapshots %}
         <tr{% if selected_snapshot_id == row.snapshot_id %} class="row-selected"{% endif %}>
           <td>
-            <div><strong>{{ row.summary_label }}</strong></div>
+            <div><strong>{{ row.classification }}</strong></div>
+            <div class="muted">{{ row.summary_label }}</div>
             <div class="muted">Snapshot ID: {{ row.snapshot_id }}</div>
             <div class="muted">Captured artifact time (UTC): {{ row.artifact_mtime_utc }}</div>
           </td>

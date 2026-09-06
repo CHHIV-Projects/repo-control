@@ -77,6 +77,7 @@ class SnapshotSummary:
     working_tree_clean: bool
     current_state_match: bool
     summary_label: str
+    classification: str
     artifact_mtime_utc: str
     staged_count: int
     unstaged_count: int
@@ -469,8 +470,39 @@ def load_context_view(
     )
 
 
-def list_snapshots(snapshots_root: Path, repository_id: str, current_snapshot_candidate_id: str) -> list[SnapshotSummary]:
+def list_snapshots(
+    snapshots_root: Path,
+    repository_id: str,
+    current_snapshot_candidate_id: str,
+    workflow_root: Path | None = None,
+) -> list[SnapshotSummary]:
     rows: list[SnapshotSummary] = []
+    classifications: dict[str, str] = {}
+    if workflow_root is not None:
+        plan_root = workflow_root / "commit_plans"
+        for plan_id in _sorted_ids(plan_root):
+            payload = json.loads((plan_root / plan_id / "plan.json").read_text(encoding="utf-8"))
+            snapshot_id = payload.get("matching_snapshot_id")
+            if snapshot_id:
+                classifications[snapshot_id] = "Commit candidate"
+        execution_root = workflow_root / "commit_executions"
+        audit_root = workflow_root / "commit_audits"
+        audits: dict[str, dict[str, Any]] = {}
+        for audit_id in _sorted_ids(audit_root):
+            audit_path = audit_root / audit_id / "audit.json"
+            if audit_path.exists():
+                audit = json.loads(audit_path.read_text(encoding="utf-8"))
+                audits[audit.get("execution_id", "")] = audit
+        for execution_id in _sorted_ids(execution_root):
+            execution_path = execution_root / execution_id / "execution.json"
+            if not execution_path.exists():
+                continue
+            execution = json.loads(execution_path.read_text(encoding="utf-8"))
+            snapshot_id = execution.get("matching_snapshot_id")
+            if not snapshot_id:
+                continue
+            outcome = audits.get(execution_id, {}).get("outcome")
+            classifications[snapshot_id] = "Commit mutation succeeded / audit failed" if outcome == "mutation_succeeded_audit_failed" else "Commit aligned"
     for snapshot_id in _sorted_ids_by_mtime(snapshots_root):
         snapshot_dir = snapshots_root / snapshot_id
         snapshot_payload = _verify_existing_snapshot(snapshot_dir, repository_id)
@@ -489,6 +521,10 @@ def list_snapshots(snapshots_root: Path, repository_id: str, current_snapshot_ca
                     snapshot_payload["head_commit"],
                     bool(snapshot_payload["working_tree_clean"]),
                     snapshot_id == current_snapshot_candidate_id,
+                ),
+                classification=classifications.get(
+                    snapshot_id,
+                    "Matching Snapshot available" if snapshot_id == current_snapshot_candidate_id else "Intermediate",
                 ),
                 artifact_mtime_utc=_snapshot_mtime_utc(snapshot_dir),
                 staged_count=staged_count,
@@ -627,6 +663,14 @@ def summarize_workflow_artifacts(workflow_root: Path, git_state: dict[str, Any])
         payload = json.loads((execution_dir / "execution.json").read_text(encoding="utf-8"))
         commit_executions_by_plan[payload.get("plan_id", "")] = (payload, execution_dir)
 
+    commit_audits_by_execution: dict[str, dict[str, Any]] = {}
+    audit_root = workflow_root / "commit_audits"
+    for audit_id in _sorted_ids(audit_root):
+        audit_path = audit_root / audit_id / "audit.json"
+        if audit_path.exists():
+            audit_payload = json.loads(audit_path.read_text(encoding="utf-8"))
+            commit_audits_by_execution[audit_payload.get("execution_id", "")] = audit_payload
+
     stage_plan_root = workflow_root / "stage_plans"
     for plan_id in _sorted_ids(stage_plan_root):
         plan_dir = stage_plan_root / plan_id
@@ -690,10 +734,16 @@ def summarize_workflow_artifacts(workflow_root: Path, git_state: dict[str, Any])
             execution_payload, execution_dir = execution_pair
             execution_head = execution_payload.get("head_after") or "unknown"
             execution_subject, execution_tags = _git_identity(execution_head)
+            audit = commit_audits_by_execution.get(execution_payload.get("execution_id", ""), {})
+            audit_failed = audit.get("outcome") == "mutation_succeeded_audit_failed"
             execution = WorkflowExecutionSummary(
                 execution_id=execution_payload.get("execution_id", "unknown"),
-                status="Executed",
-                result=f"Committed to {_short_sha(execution_payload.get('head_after', 'unknown'))}",
+                status="Mutation succeeded / audit failed" if audit_failed else "Executed",
+                result=(
+                    f"Commit mutation succeeded; post-verification failed: {audit.get('reason', 'audit failure')}. Do not retry automatically; inspect the resulting HEAD."
+                    if audit_failed
+                    else f"Committed to {_short_sha(execution_payload.get('head_after', 'unknown'))}"
+                ),
                 artifact_mtime_utc=_artifact_time(execution_dir),
                 head_after=execution_head,
                 head_after_short=_short_sha(execution_head),

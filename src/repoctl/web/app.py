@@ -239,7 +239,7 @@ def create_web_app(
     @app.get("/snapshots")
     def snapshots_page():
         selected_snapshot_id = request.args.get("snapshot_id")
-        status_json_path, _ = status_paths()
+        status_json_path, wf_root = status_paths()
         # Keep current-match cue aligned with the repository's current state.
         generate_milestone_status(str(repo_root), state_root=effective_state_root)
         status_payload = _read_status(status_json_path)
@@ -247,6 +247,7 @@ def create_web_app(
             snapshots_root(),
             repo_id,
             status_payload["current_snapshot_id_candidate"],
+            workflow_root=wf_root,
         )
         selected_snapshot = next((row for row in rows if row.snapshot_id == selected_snapshot_id), None)
         return render_template(
@@ -402,8 +403,18 @@ def create_web_app(
         return render_template(
             "workflow.html",
             workflow_state=status_payload["workflow_state"],
+            matching_snapshot_exists=status_payload["matching_snapshot_exists"],
+            matching_snapshot_id=status_payload["matching_snapshot_id"],
             rows=workflow_rows,
         )
+
+    @app.post("/workflow/snapshot/create")
+    def workflow_create_snapshot_action():
+        _require_csrf()
+        scan_result = run_scan_with_artifacts(str(repo_root), state_root=effective_state_root)
+        result = create_snapshot(scan_result=scan_result, state_root=effective_state_root)
+        flash(f"Matching Snapshot ready: {result['snapshot_id']}.", "success")
+        return redirect(url_for("workflow_page"))
 
     @app.post("/workflow/stage/prepare")
     def workflow_prepare_stage_action():
@@ -452,6 +463,11 @@ def create_web_app(
     @app.post("/workflow/commit/prepare")
     def workflow_prepare_commit_action():
         _require_csrf()
+        status_json_path, _ = status_paths()
+        generate_milestone_status(str(repo_root), state_root=effective_state_root)
+        status_payload = _read_status(status_json_path)
+        if not status_payload["matching_snapshot_exists"]:
+            raise WebUIError("matching_snapshot_required", "Create the matching Snapshot before preparing Commit.")
         message = request.form.get("commit_message", "").strip()
         if not message:
             raise WebUIError("invalid_input", "Commit message is required.", status_code=400)
